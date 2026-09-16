@@ -458,6 +458,20 @@ def run_core_install(root: Path) -> None:
         _run_install_cmd(prefix + ["install", "-e", target], env=env, root=root)
 
     with _stdout_to_stderr():
+        feed_env = _er.package_source_env(env)
+        index = feed_env.get("UV_DEFAULT_INDEX", "").rstrip("/")
+        if index and index != "https://pypi.org/simple":
+            if (len(prefix) != 2 or prefix[1] != "pip"
+                    or Path(prefix[0]).name.lower() not in ("uv", "uv.exe")):
+                raise RuntimeError(
+                    "The configured Python feed requires uv; refusing an unlocked pip fallback."
+                )
+            env = feed_env
+            from hermes_cli.package_install import install_locked_from_feed
+            python = Path(env['VIRTUAL_ENV']) / ('Scripts/python.exe' if _is_windows() else 'bin/python')
+            install_locked_from_feed(prefix[0], root, python, env, group=group,
+                                     run_install=lambda cmd, child_env: _run_install_cmd(cmd, env=child_env, root=root))
+            return
         _er._run_ensurepip(root)
         try:
             install(f".[{group}]")

@@ -938,6 +938,18 @@ def _install_python_dependencies_with_optional_fallback(
     installs (#71510 fixed the ZIP path, #83335 fixed lazy-deps; this closes the shared helper for the
     remaining callers).
     """
+    from hermes_cli._early_recovery import package_source_env
+
+    feed_env = package_source_env(env)
+    index = feed_env.get("UV_DEFAULT_INDEX", "").rstrip("/")
+    custom_feed = bool(index and index != "https://pypi.org/simple")
+    if custom_feed:
+        if (len(install_cmd_prefix) != 2 or install_cmd_prefix[1] != "pip"
+                or Path(install_cmd_prefix[0]).name.lower() not in ("uv", "uv.exe")):
+            raise RuntimeError(
+                "The configured Python feed requires uv; refusing an unlocked pip fallback."
+            )
+        env = feed_env
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     # Only uv needs the explicit pin; pip resolves the target from sys.executable itself.
@@ -961,6 +973,21 @@ def _install_python_dependencies_with_optional_fallback(
         # strand half-updated (#87331).
         _run_quarantined_install(
             install_cmd_prefix + args, env=env, scripts_dir=scripts_dir, strict_quarantine=True)
+
+    if custom_feed:
+        from hermes_cli.package_install import install_locked_from_feed
+        from hermes_cli.main import PROJECT_ROOT
+        python = _resolve_install_target_python(install_cmd_prefix, env)
+        if python is None:
+            python = Path(sys.executable)
+            if scripts_dir is None and _is_windows():
+                scripts_dir = _interpreter_scripts_dir()
+        install_locked_from_feed(install_cmd_prefix[0], PROJECT_ROOT, python, env, group=group,
+                                 run_install=lambda cmd, child_env: _run_quarantined_install(
+                                     cmd, env=child_env, scripts_dir=scripts_dir, strict_quarantine=True))
+        _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group, allow_repair=False)
+        _verify_console_scripts_installed(install_cmd_prefix, env=env, allow_repair=False)
+        return
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -1051,20 +1078,42 @@ def _load_console_script_names() -> list[str]:
     return [str(name) for name in scripts if name]
 
 
+def _verification_repair_policy(
+    env: dict[str, str] | None, allow_repair: bool
+) -> tuple[dict[str, str] | None, bool]:
+    """Custom feeds prohibit unlocked repair, including callers that request it.
+
+    Resolve inherited/shared policy here, not at individual install call sites.
+    Preserve the original environment and repair flag for default/public feeds.
+    """
+    feed_env = _early_recovery_mod.package_source_env(env)
+    index = feed_env.get("UV_DEFAULT_INDEX", "").rstrip("/")
+    if index and index != "https://pypi.org/simple":
+        return feed_env, False
+    return env, allow_repair
+
+
 def _verify_console_scripts_installed(
-    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None) -> None:
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None,
+    allow_repair: bool = True) -> None:
     """Ensure every declared console_script shim exists on disk after install.
 
     On Windows ``uv pip install -e .`` can register ``hermes.exe`` in the wheel RECORD while the
     file never lands (live shim locked, launcher write skipped), so ``hermes`` drops off PATH
     after a "successful" install. Missing shims get ``--reinstall -e .`` under quarantine.
+    Custom feeds or ``allow_repair=False`` make verification read-only; failures raise instead.
 
     The symptom is ``hermes-agent.exe`` and ``hermes-acp.exe`` present but ``hermes.exe`` missing, so
     ``hermes`` drops off PATH even though the install reported success (issue #52931).
     """
     if not _is_windows():
         return
+    env, allow_repair = _verification_repair_policy(env, allow_repair)
     scripts_dir = _venv_scripts_dir()
+    if not allow_repair:
+        scripts_dir = scripts_dir or _interpreter_scripts_dir()
+        if scripts_dir is None or _pyproject_project() is None:
+            raise RuntimeError("Console script verification failed: cannot inspect target; repair disabled.")
     names = _load_console_script_names() if scripts_dir is not None else []
     if not names:
         return
@@ -1075,6 +1124,9 @@ def _verify_console_scripts_installed(
     missing = _missing()
     if not missing:
         return
+    if not allow_repair:
+        raise RuntimeError(
+            f"Console script verification failed: missing {', '.join(missing)}; repair disabled.")
     print(
         f"  ⚠ Verification: {len(missing)} console script(s) missing on disk: "
         f"{', '.join(missing)}")
@@ -1115,7 +1167,8 @@ _MISSING_DEPS_SCRIPT = (
 
 
 def _verify_core_dependencies_installed(
-    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all"
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all",
+    allow_repair: bool = True
 ) -> None:
     """Check that every base dep from pyproject.toml is installed in the target venv; if not, retry.
 
@@ -1124,9 +1177,13 @@ def _verify_core_dependencies_installed(
     interpreter. Missing deps trigger a base-group ``--reinstall``, then a per-package force
     install. The final state is a warning, not a hard failure, so one broken-on-PyPI dep can't
     block an otherwise-successful update — but the partial install is visible where it happened.
+    Custom feeds or ``allow_repair=False`` make missing deps/failed probes raise without any install.
     """
+    env, allow_repair = _verification_repair_policy(env, allow_repair)
     project = _pyproject_project("dep verification: failed to read pyproject.toml: %s")
     if project is None:
+        if not allow_repair:
+            raise RuntimeError("Core dependency verification failed: cannot read pyproject.toml; repair disabled.")
         return
     raw_deps = project.get("dependencies", []) or []
     applicable = _applicable_dependency_names(raw_deps)
@@ -1135,6 +1192,8 @@ def _verify_core_dependencies_installed(
     # Probe inside the venv Python — sys.executable may be the outer Python that drove
     # ``hermes update``; the install prefix/env encode which environment we targeted.
     venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None and not allow_repair:
+        venv_python = Path(sys.executable)
     if venv_python is None:
         return
 
@@ -1142,13 +1201,20 @@ def _verify_core_dependencies_installed(
         try:
             result = _venv_probe(venv_python, _MISSING_DEPS_SCRIPT, *applicable, env=env)
         except Exception as e:
+            if not allow_repair:
+                raise RuntimeError("Core dependency verification failed: probe could not run; repair disabled.") from e
             logger.debug("dep verification: subprocess failed: %s", e)
             return []
+        if not allow_repair and result.returncode != 0:
+            raise RuntimeError("Core dependency verification failed: probe exited unsuccessfully; repair disabled.")
         return _nonblank_lines(result.stdout)
 
     missing = _missing_deps()
     if not missing:
         return
+    if not allow_repair:
+        raise RuntimeError(
+            f"Core dependency verification failed: missing {', '.join(missing)}; repair disabled.")
     print(
         f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
         f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}")

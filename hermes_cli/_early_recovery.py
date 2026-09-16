@@ -273,6 +273,63 @@ def _probe_broken_packages() -> list[str]:
     return broken
 
 
+def package_source_env(base_env: dict | None = None, *, root: Path | None = None) -> dict:
+    """Read install-wide package routing before YAML/third-party imports are available.
+
+    Keep this JSON file outside the managed checkout so updates preserve it. Missing
+    policy leaves normal package-manager configuration unchanged. Invalid policy
+    fails closed rather than silently reverting to a public registry.
+    """
+    import json
+    from hermes_constants import get_default_hermes_root
+    from urllib.parse import urlsplit
+
+    env = dict(os.environ if base_env is None else base_env)
+    path = (root if root is not None else get_default_hermes_root()) / 'package-sources.json'
+    if not path.exists():
+        return env
+    policy = json.loads(path.read_text(encoding='utf-8-sig'))
+    if not isinstance(policy, dict) or set(policy) - {'python_index_url', 'npm_registry'}:
+        raise ValueError(f'Invalid package source policy: {path}')
+    for name, value in policy.items():
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f'{name} must be an HTTPS URL')
+        parsed = urlsplit(value)
+        # urlsplit defers numeric/range validation until the port is accessed.
+        _ = parsed.port
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment
+                or any(c.isspace() for c in value)):
+            raise ValueError(f'{name} must be an HTTPS URL without credentials, query, or fragment')
+    index = policy.get('python_index_url')
+    if index is not None:
+        for key in ('UV_INDEX', 'UV_EXTRA_INDEX_URL', 'PIP_EXTRA_INDEX_URL'):
+            env.pop(key, None)
+        for key in ('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'PIP_INDEX_URL'):
+            env[key] = index
+        # Do not inherit an additional pip registry from a user/system pip.ini.
+        env['PIP_CONFIG_FILE'] = os.devnull
+    registry = policy.get('npm_registry')
+    if registry is not None:
+        for key in list(env):
+            if key.upper() == 'NPM_CONFIG_REGISTRY':
+                env.pop(key)
+        env['NPM_CONFIG_REGISTRY'] = registry
+        # Absolute npm invocation alone is insufficient: lifecycle scripts invoke
+        # bare node/npm and otherwise escape to an unsupported system toolchain.
+        node_dir = path.parent / 'node'
+        if (node_dir / ('node.exe' if sys.platform == 'win32' else 'node')).is_file():
+            old_path = next((env[k] for k in env if k.upper() == 'PATH'), '')
+            for key in list(env):
+                if key.upper() == 'PATH':
+                    env.pop(key)
+            entries = [p for p in old_path.split(os.pathsep) if p and os.path.normcase(p) != os.path.normcase(str(node_dir))]
+            env['PATH'] = os.pathsep.join([str(node_dir), *entries])
+    return env
+
+
 def _find_uv_binary() -> str | None:
     """Locate a ``uv`` binary without importing third-party modules.
 
@@ -281,6 +338,12 @@ def _find_uv_binary() -> str | None:
     vendors (``~/.hermes/bin/uv.exe``) or the user has on PATH.
     """
     exe = "uv.exe" if sys.platform == "win32" else "uv"
+    # Use the platform-native, install-wide store before legacy user tools.
+    # hermes_constants is stdlib-only and safe during interrupted-install recovery.
+    from hermes_constants import get_default_hermes_root
+    managed = get_default_hermes_root() / "bin" / exe
+    if managed.is_file():
+        return str(managed)
     for sub in ((".hermes", "bin"), (".local", "bin"), (".cargo", "bin")):
         path = Path.home().joinpath(*sub, exe)
         if path.is_file():
