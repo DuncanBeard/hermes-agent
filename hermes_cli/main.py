@@ -47,6 +47,14 @@ from hermes_cli import _startup_fast  # noqa: E402
 # #57828.
 from hermes_cli import _early_recovery as _early_recovery_mod
 
+# Package routing must be available before an interrupted install repairs itself.
+# Validate outside the best-effort recovery guard: bad policy must not fall back.
+_package_env = _early_recovery_mod.package_source_env()
+for _key in set(os.environ) - set(_package_env):
+    os.environ.pop(_key, None)
+os.environ.update(_package_env)
+del _package_env
+
 try:
     _early_recovery_mod.recover_if_needed()
 except Exception:

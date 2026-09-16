@@ -73,7 +73,8 @@ def managed_python_env(
     """Return a sanitized environment for Hermes-private uv Python commands."""
     target = (
         Path(install_dir) if install_dir is not None else managed_python_install_dir(project_root))
-    env = dict(os.environ if base_env is None else base_env)
+    from hermes_cli._early_recovery import package_source_env
+    env = package_source_env(base_env)
     for key in (
         "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT", "UV_NO_MANAGED_PYTHON",
         "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME",
@@ -680,13 +681,19 @@ def _stage_candidate_venv(
     # reset, so even an update running from an old base executes THIS
     # copy — unlike the heartbeat helper (main_install_repair.py), which
     # is imported at startup and only protects bases that ship its twin.
-    status, reason = _stream_sync(
-        [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
-        cwd=project_root, env=sync_env)
-    if status != 0:
-        # The reason travels with the rejection into RuntimeRepairResult.detail, which the
-        # failure report prints and the update receipt records.
-        return reject("candidate dependency sync failed (rc=%d): %s", status, reason)
+    if sync_env.get('UV_DEFAULT_INDEX') and sync_env['UV_DEFAULT_INDEX'].rstrip('/') != 'https://pypi.org/simple':
+        from hermes_cli.package_install import install_locked_from_feed
+        try:
+            install_locked_from_feed(uv_bin, project_root, _venv_python(candidate), sync_env)
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            return reject("candidate configured-feed install failed: %s", exc)
+    else:
+        status, reason = _stream_sync(
+            [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
+            cwd=project_root, env=sync_env)
+        if status != 0:
+            # Preserve the diagnosis in RuntimeRepairResult.detail and the update receipt.
+            return reject("candidate dependency sync failed (rc=%d): %s", status, reason)
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
         return reject("candidate venv smoke failed: %s", detail)

@@ -20,6 +20,57 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
+### Package indexes behind an organization proxy
+
+For an existing installation whose package downloads must use an approved mirror,
+create `package-sources.json` in the **shared Hermes root**, outside the managed Git
+checkout and outside individual profiles:
+
+- Windows default: `%LOCALAPPDATA%\hermes\package-sources.json`
+- Linux/macOS default: `~/.hermes/package-sources.json`
+- Custom `HERMES_HOME`: place it at that root; for `<root>/profiles/<name>`, use
+  `<root>/package-sources.json`.
+
+```json
+{
+  "python_index_url": "https://example.invalid/pypi/simple",
+  "npm_registry": "https://example.invalid/npm/"
+}
+```
+
+Replace the examples with your administrator's feed URLs. Both keys are optional;
+`null` leaves that package manager unchanged. URLs must use HTTPS and cannot contain
+credentials, query strings, fragments, or whitespace. Unknown keys, invalid JSON,
+and invalid URLs stop startup rather than silently falling back to public feeds.
+Correct the file before retrying. With no file, package-manager environment settings
+are left unchanged. Keep this machine-local file out of source control.
+
+This small JSON file is intentionally separate from profile `config.yaml`: the CLI
+must read it using only the Python standard library **before** repairing an interrupted
+installation, when YAML support may itself be broken. Every profile shares the same
+installation-level package policy.
+
+For a custom Python index, the uv updater, early core repair, and replacement-venv
+installation export the shipped `uv.lock` graph and hashes with `uv export --frozen`.
+Packages are then installed from the configured index using `--no-deps --require-hashes`,
+not downloaded directly from the public artifact URLs in the lockfile. The lockfile is
+not rewritten. Build tools use locked hashes when available; otherwise a build-only hash
+snapshot is resolved through the configured feed, constrained by the exported runtime
+graph. The editable project uses those tools with `--no-build-isolation`. Windows uses
+wheels only. A missing/blocked artifact or failed hash check fails the operation; there
+is no unlocked/public retry on this path. This requires an available uv executable.
+
+The policy overrides default/extra Python index environment settings and disables pip
+configuration-file indexes. For npm it overrides the registry environment setting and,
+when present, prepends the shared root's `node` directory to `PATH`, so lifecycle children
+also find the bundled Node runtime. Package-manager-specific authentication should be
+configured separately, never embedded in this JSON.
+
+This is package-manager routing, **not a network sandbox**: Git updates, managed-runtime
+bootstrap downloads, explicit npm tarball URLs, and lifecycle scripts that download their
+own binaries may use other endpoints. Your organization may need separate allowances or
+mirrors for those. Removing the file restores normal routing on the next CLI launch.
+
 ### Passive update notices
 
 Pinned or noninteractive installations can disable passive CLI version and banner update checks:
