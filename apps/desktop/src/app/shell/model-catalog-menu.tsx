@@ -12,7 +12,6 @@ import {
   DropdownMenuLabel,
   dropdownMenuRow,
   DropdownMenuSearch,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubTrigger
@@ -95,9 +94,6 @@ interface ModelCatalogMenuProps {
   /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
    *  a tile's menu queries the session owner's backend, not chrome's. */
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
-  /** Render the virtual `moa` provider's presets as a selectable section.
-   *  Off for override surfaces, where a MoA preset isn't a worker model. */
-  includeMoa?: boolean
   /** Registry source owning this catalog. Profile/session names are not unique
    * across sources, so this participates in the React Query cache key. */
   ownerConnectionId?: string
@@ -125,7 +121,6 @@ export function ModelCatalogMenu({
   controller,
   footer,
   gateway,
-  includeMoa = false,
   ownerConnectionId,
   profile = 'default',
   request,
@@ -234,13 +229,6 @@ export function ModelCatalogMenu({
 
   const providers = modelOptions.data?.providers
 
-  // The catalog carries MoA presets as a virtual `moa` provider row. Keep it
-  // out of the main groups so presets never show up twice.
-  const moaPresets = useMemo(
-    () => (includeMoa ? (providers?.find(p => p.slug.toLowerCase() === 'moa')?.models ?? []) : []),
-    [providers, includeMoa]
-  )
-
   const pickerProviders = useMemo(
     () =>
       providers?.filter(
@@ -276,14 +264,6 @@ export function ModelCatalogMenu({
     [pickerProviders, search, current.model, current.provider, shownKeys]
   )
 
-  // Presets are searchable rows like everything else — an unfiltered preset
-  // sitting under zero model matches would otherwise become the "first match"
-  // Enter commits.
-  const shownMoaPresets = useMemo(
-    () => (q ? moaPresets.filter(preset => foldIncludes(`moa ${preset}`, q)) : moaPresets),
-    [moaPresets, q]
-  )
-
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
@@ -307,20 +287,10 @@ export function ModelCatalogMenu({
     )
   }
 
-  const selectMoaPreset = async (preset: string) => {
-    if ((await controller.select(preset, 'moa')) === false) {
-      return
-    }
-
-    closeMenu()
-  }
-
   // ── Keyboard selection (cmdk semantics on a Radix menu) ───────────────────
   // One flat list mirroring EXACTLY what's rendered (collapse, filter, presets),
   // so the selection can never sit on a hidden row.
-  type KbRow =
-    | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
-    | { key: string; kind: 'moa'; preset: string }
+  type KbRow = { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
 
   const kbRows = useMemo<KbRow[]>(
     () => [
@@ -333,10 +303,9 @@ export function ModelCatalogMenu({
               kind: 'family',
               provider: group.provider
             }))
-      ),
-      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
+      )
     ],
-    [groups, collapsedProviders, search, shownMoaPresets]
+    [groups, collapsedProviders, search]
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
@@ -345,10 +314,8 @@ export function ModelCatalogMenu({
   const pointerQuiet = usePointerQuiet()
 
   const rowIsCurrent = (row: KbRow) =>
-    row.kind === 'moa'
-      ? current.provider === 'moa' && row.preset === current.model
-      : catalogProviderMatches(row.provider, current.provider) &&
-        (row.family.id === current.model || row.family.fastId === current.model)
+    catalogProviderMatches(row.provider, current.provider) &&
+    (row.family.id === current.model || row.family.fastId === current.model)
 
   const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
@@ -369,12 +336,6 @@ export function ModelCatalogMenu({
     const row = kbIndex >= 0 ? kbRows[kbIndex] : undefined
 
     if (!row) {
-      return
-    }
-
-    if (row.kind === 'moa') {
-      void selectMoaPreset(row.preset)
-
       return
     }
 
@@ -448,7 +409,7 @@ export function ModelCatalogMenu({
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 && moaPresets.length === 0 && shownDownloads.length === 0 ? (
+      ) : groups.length === 0 && shownDownloads.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -613,32 +574,6 @@ export function ModelCatalogMenu({
           )}
         </div>
       )}
-
-      {shownMoaPresets.length > 0 ? (
-        <div className={cn(quietRows)}>
-          <DropdownMenuSeparator className="mx-0" />
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
-          {shownMoaPresets.map(preset => {
-            const isCurrentMoa = current.provider === 'moa' && current.model === preset
-
-            return (
-              <DropdownMenuItem
-                key={`moa:${preset}`}
-                onSelect={event => {
-                  event.preventDefault()
-                  void selectMoaPreset(preset)
-                }}
-                {...kbRowProps(`moa:${preset}`)}
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  MoA: <HighlightMatches foldSeparators query={search} text={preset} />
-                </span>
-                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
-              </DropdownMenuItem>
-            )
-          })}
-        </div>
-      ) : null}
 
       {/* Curation belongs to the catalog, not to one host: wherever you can
           pick a model you can say which models you want, and the shortlist is

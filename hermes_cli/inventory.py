@@ -94,38 +94,9 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
-    # Managed local runtime: staged GGUFs are selectable like any provider's models, but
-    # list_authenticated_providers can't know about them (no credential — reachability is the
-    # credential), so inject the row here where every picker surface inherits it.
-    local_row = _local_runtime_row(ctx)
-    if local_row is not None:
-        rows = _without_slug(rows, "llamacpp") + [local_row]
-        # A live session on the managed server reports provider "custom" (raw base_url label), which
-        # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
-        # checkmark. The Local row owns the managed server's identity — drop such custom rows.
-        if local_row.get("is_current"):
-            staged = set(local_row["models"])
-
-            def _is_managed_custom(row: dict) -> bool:
-                models = {str(m) for m in (row.get("models") or [])}
-                return _slug(row) == "custom" and bool(models) and models <= staged
-
-            rows = [r for r in rows if not _is_managed_custom(r)]
-
-    moa_row = _moa_provider_row(ctx.current_provider)
-    if moa_row is not None:
-        rows = [moa_row] + _without_slug(rows, "moa")
-
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
-        # If the current provider lost its credential, list_authenticated_providers() omits it; keep
-        # that one row so the UI shows the saved selection + a re-auth affordance instead of appearing
-        # to jump providers. Exception: a "custom" current on the managed local server is already
-        # represented by the Local row — the skeleton would resurrect the duplicate removed above.
-        _local_owns_current = bool(local_row and local_row.get("is_current")
-                                   and (ctx.current_provider or "").lower() == "custom")
-        if not _local_owns_current:
-            rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
+        rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
@@ -440,31 +411,6 @@ def _append_unconfigured_rows(
     return extras
 
 
-def _anthropic_oauth_credentials_present() -> bool:
-    """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
-    login) — those leave no trace in active_provider / model.provider / API-key env vars."""
-    try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
-
-        readers = (read_hermes_oauth_credentials, read_claude_code_credentials)
-        if any((read() or {}).get("accessToken") for read in readers):
-            return True
-    except Exception:
-        return False
-    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are equally deliberate — discovery
-    # accepts them via pool.has_credentials(), so the filter must too or those rows are built then
-    # silently dropped. Read-only (no load_pool) so a picker open never mutates auth.json.
-    try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH
-        from hermes_cli.auth import read_credential_pool
-
-        for entry in read_credential_pool("anthropic"):
-            if (isinstance(entry, dict) and entry.get("auth_type") == AUTH_TYPE_OAUTH
-                    and str(entry.get("access_token") or "").strip()):
-                return True
-    except Exception:
-        pass
-    return False
 
 
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
@@ -489,8 +435,6 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             _provider_is_keyless(slug)  # zero-setup providers need no configuration at all
             # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            or (slug == "anthropic" and _anthropic_oauth_credentials_present())
-            or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )
 
@@ -498,15 +442,6 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             if (slug := str(row.get("slug", "")).strip().lower()) and _is_explicit(row, slug)]
 
 
-def _external_process_signed_in(slug: str) -> bool:
-    """True when an external-process provider has verified CLI credentials."""
-    try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
-        pconfig = PROVIDER_REGISTRY.get(slug)
-        return bool(pconfig and pconfig.auth_type == "external_process"
-                    and get_external_process_provider_status(slug).get("auth_verified"))
-    except Exception:
-        return False
 
 
 def _provider_is_keyless(slug: str) -> bool:
@@ -519,30 +454,6 @@ def _provider_is_keyless(slug: str) -> bool:
         return False
 
 
-def _raw_config_has_enabled_moa_preset() -> bool:
-    """True when the user's RAW config enables MoA: ``load_config()`` merges the DEFAULT_CONFIG preset for
-    everyone, which is not a user choice; visible once one enabled preset (or legacy flat config) is saved."""
-    try:
-        from hermes_cli.config import read_raw_config
-
-        raw = read_raw_config()
-    except Exception:
-        return False
-
-    moa = raw.get("moa") if isinstance(raw, dict) else None
-    if not isinstance(moa, dict):
-        return False
-
-    presets = moa.get("presets")
-    if isinstance(presets, dict):
-        return any(
-            not isinstance(preset, dict) or preset.get("enabled", True)
-            for name, preset in presets.items() if str(name or "").strip()
-        )
-
-    legacy_keys = {"reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
-                   "max_tokens", "reference_max_tokens", "fanout"}
-    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:
@@ -667,32 +578,6 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["unavailable_models"] = []
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
-    """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
-    before the server runs (selection starts it via the runtime_provider seam)."""
-    try:
-        from hermes_cli.local_runtime.bootstrap import staged_model_ids
-
-        staged = staged_model_ids()
-        if not staged:
-            return None
-        current = (ctx.current_provider or "").strip().lower() in ("llamacpp", "llama.cpp", "llama-cpp")
-        if not current:
-            # A LIVE session on the managed server reports provider "custom" with the managed base_url;
-            # match on the endpoint so the session being chatted in still shows a selection.
-            try:
-                from hermes_cli.local_runtime.endpoint import _state_endpoint
-
-                managed = _state_endpoint()
-                current = bool(managed and (ctx.current_base_url or "").strip().rstrip("/")
-                               == managed["base_url"].rstrip("/"))
-            except Exception:
-                current = False
-        # Bare "Local" user-facing (engine name is an implementation detail); authenticated = reachability.
-        return _row("llamacpp", "Local", current, models=staged, total_models=len(staged),
-                    source="local-runtime", authenticated=True, auth_type="local", warning=None)
-    except Exception:
-        return None
 
 
 def _prewarm_pricing_async(
@@ -729,21 +614,3 @@ def _prewarm_pricing_async(
         _pricing_prewarm_threads[prewarm_key] = thread
         thread.start()
         return thread
-
-
-def _moa_provider_row(current_provider: str = "") -> dict | None:
-    """The virtual ``moa`` row shared by the CLI inventory and gateway picker; ``None`` without presets."""
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
-
-        cfg = normalize_moa_config(load_config().get("moa") or {})
-        models = list(cfg.get("presets", {}).keys())
-        if not models:
-            return None
-        return _row(
-            "moa", "Mixture of Agents", (current_provider or "").lower() == "moa", models=models,
-            total_models=len(models), source="virtual", authenticated=True, auth_type="virtual",
-            warning="Aggregator acts as the selected model; references provide analysis before each call.")
-    except Exception:
-        return None

@@ -14,42 +14,16 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
-_QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 # Per-request cache slot attribute names (OpenAI-style and Anthropic clients).
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
 
 
-def _routermint_headers() -> dict:
-    """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli import __version__ as _HERMES_VERSION
-    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
-
-
-def _qwen_portal_headers() -> dict:
-    import platform as _plat
-    _ua = f"QwenCode/{_QWEN_CODE_VERSION} ({_plat.system().lower()}; {_plat.machine()})"
-    return {
-        "User-Agent": _ua, "X-DashScope-CacheControl": "enable", "X-DashScope-UserAgent": _ua,
-        "X-DashScope-AuthType": "qwen-oauth",
-    }
-
-
 # Route-specific default headers; first host match wins (order preserved from the original chain).
 # Builders resolve their module lazily so run_agent keeps its import-time cost and avoids cycles.
 _ROUTE_DEFAULT_HEADERS = (
-    ("openrouter.ai", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_or_headers")()),
-    ("ai-gateway.vercel.sh", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
-    ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
-    ("api.routermint.com", lambda self, url: _routermint_headers()),
     ("githubcopilot.com", lambda self, url: _lazy_attr("hermes_cli.models", "copilot_default_headers")()),
-    ("api.kimi.com", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
-    ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
-    ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
-        self._client_kwargs.get("api_key", ""), base_url=url)),
-    # Covers provider=xai and provider=xai-oauth (api.x.ai).
-    ("x.ai", lambda self, url: _lazy_attr("tools.xai_http", "hermes_xai_default_headers")()),
 )
 
 
@@ -67,11 +41,7 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
-    if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
-        return
+
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
@@ -278,11 +248,7 @@ class ClientLifecycleMixin:
             old_client = getattr(self, "client", None)
             try:
                 # MoA's ``client`` is an in-process facade, not an SDK client; generic rebuilds must preserve that.
-                if (getattr(self, "provider", "") or "").strip().lower() == "moa":
-                    from agent.moa_loop import build_moa_facade
-                    new_client = build_moa_facade(self, self.model)
-                else:
-                    new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
+                new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
             except Exception as exc:
                 logger.warning(
                     "Failed to rebuild shared primary client (%s) %s error=%s", reason, self._client_log_context(), exc,
@@ -426,7 +392,7 @@ class ClientLifecycleMixin:
     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
         from unittest.mock import Mock
         primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa" or isinstance(primary_client, Mock):
+        if isinstance(primary_client, Mock):
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
@@ -469,8 +435,7 @@ class ClientLifecycleMixin:
 
     def _request_anthropic_client_key(self) -> tuple:
         """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
-            return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
@@ -487,9 +452,8 @@ class ClientLifecycleMixin:
         return _is_oauth_token(token) if self.provider == "anthropic" else False
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
-        from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
-        if key[0] == "bedrock":
-            return build_anthropic_bedrock_client(key[1])
+        from agent.anthropic_adapter import build_anthropic_client
+
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
@@ -498,8 +462,7 @@ class ClientLifecycleMixin:
         The watchdog must never ``close()`` a client a worker is still reading (fd recycled under a live SSL BIO →
         TLS record in a SQLite header); per-request clients let the stranger ``shutdown()`` while the owner closes.
         """
-        if self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
+
         key = self._request_anthropic_client_key()
         cached, stale = self._checkout_request_slot(_ANTHROPIC_SLOT, key)
         if cached is not None:
@@ -551,42 +514,6 @@ class ClientLifecycleMixin:
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
 
-    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
-            return False
-        # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
-        # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
-        try:
-            from hermes_cli import auth as _auth
-            resolve = (
-                _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
-                else _auth.resolve_xai_oauth_runtime_credentials
-            )
-            singleton_now = resolve(refresh_if_expiring=False)
-        except Exception as exc:
-            logger.debug("%s singleton read failed: %s", self.provider, exc)
-            return False
-        singleton_key = str(singleton_now.get("api_key") or "").strip()
-        old_key = str(self.api_key or "").strip()
-        if singleton_key and old_key and singleton_key != old_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
-                "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
-            )
-            return False
-        try:
-            creds = resolve(force_refresh=force)
-        except Exception as exc:
-            logger.debug("%s credential refresh failed: %s", self.provider, exc)
-            return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
-            return False
-        # No NEW token minted (the resolver returns the same stale token when refresh fails) → False.
-        if old_key and api_key.strip() == old_key:
-            logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
-            return False
-        return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
     def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
         # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
@@ -769,22 +696,6 @@ class ClientLifecycleMixin:
         logger.info("Applied updated .env credentials for %s: endpoint %s", self.provider, self.base_url)
         return True
 
-    def _try_refresh_vertex_client_credentials(self) -> bool:
-        """Re-mint the Vertex OAuth2 token (~1h TTL; long sessions 401 on the expired bearer) and rebuild the client."""
-        if self.api_mode != "chat_completions" or self.provider != "vertex":
-            return False
-        try:
-            from agent.vertex_adapter import get_vertex_config
-            token, base_url = get_vertex_config()
-        except Exception as exc:
-            logger.debug("Vertex credential refresh failed: %s", exc)
-            return False
-        ok = _valid_credential_pair(token, base_url) and self._adopt_openai_credentials(
-            token, base_url, reason="vertex_credential_refresh",
-        )
-        if ok:
-            logger.info("Vertex AI OAuth token refreshed")
-        return ok
 
     def _apply_copilot_token(self, token: str, enterprise_base_url: Any, *, reason: str) -> bool:
         self.api_key = token
@@ -858,34 +769,6 @@ class ClientLifecycleMixin:
             logger.info("Copilot credentials re-exchanged after stale-credential 400 (source=%s)", token_source)
         return ok
 
-    def _try_refresh_anthropic_client_credentials(self) -> bool:
-        # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
-        # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
-        if (
-            self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key")
-            or self.provider != "anthropic"
-            or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
-        ):
-            return False
-        try:
-            from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
-        except Exception as exc:
-            logger.debug("Anthropic credential refresh failed: %s", exc)
-            return False
-        new_token = new_token.strip() if isinstance(new_token, str) else ""
-        if not new_token or new_token == self._anthropic_api_key:
-            return False
-        with suppress(Exception):
-            self._anthropic_client.close()
-        try:
-            base_url = getattr(self, "_anthropic_base_url", None)
-            self._anthropic_client = self._build_direct_anthropic_client(new_token, base_url)
-        except Exception as exc:
-            logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
-            return False
-        self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
-        return True
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:
@@ -904,7 +787,7 @@ class ClientLifecycleMixin:
         # User overrides win over URL/profile defaults for the same route; a swap to another endpoint must not
         # inherit them.
         if apply_user_headers:
-            self._apply_user_default_headers()
+            self._apply_user_default_headers(base_url)
         # Per-provider extra_headers last so they survive swaps/rebuilds. SECURITY: may carry credentials; never log.
         if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
             try:
@@ -913,13 +796,17 @@ class ClientLifecycleMixin:
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
 
-    def _apply_user_default_headers(self) -> None:
+    def _apply_user_default_headers(self, base_url: str | None = None) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).
         Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic/Bedrock."""
         if self.api_mode in ("anthropic_messages", "bedrock_converse"):
             return
         from agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
-        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
+        merged = _merge_user_headers(
+            self._client_kwargs.get("default_headers"),
+            self._client_kwargs.get("base_url", "") if base_url is None else base_url,
+            getattr(self, "provider", ""),
+        )
         if merged:
             self._client_kwargs["default_headers"] = merged
 
@@ -983,8 +870,7 @@ class ClientLifecycleMixin:
 
     def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
         # A supplied request-local client was already refreshed in _create_request_anthropic_client.
-        if client is None and self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
+
         # Strips Responses-only kwargs that leak in under an api_mode-flip race.
         from agent.anthropic_adapter import create_anthropic_message
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.

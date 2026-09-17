@@ -33,7 +33,7 @@ def _make_agent(
     return AIAgent(
         api_key="test-key",
         base_url="http://test",
-        provider="openrouter",
+        provider="custom",
         api_mode="chat_completions",
         max_iterations=1,
         quiet_mode=True,

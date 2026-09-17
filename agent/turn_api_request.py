@@ -166,15 +166,6 @@ def build_api_request(
     # none serializes it into the provider payload. Re-read the live client:
     # rotation/fallback/cleanup rebuild agent.client between attempts; a native OpenAI
     # client rejects this key (TypeError).
-    if _moa_prepared_request is not None and agent.provider == "moa":
-        if _moa_client_consumes_prepared_request(agent.client):
-            api_kwargs["_moa_prepared_request"] = _moa_prepared_request
-        else:
-            logger.warning(
-                "MoA client replaced mid-turn (client=%s); sending the "
-                "prepared prompt without the MoA handshake",
-                type(agent.client).__name__,
-            )
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
         _original_api_kwargs, _llm_middleware_trace,

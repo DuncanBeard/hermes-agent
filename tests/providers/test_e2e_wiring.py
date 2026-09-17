@@ -18,11 +18,11 @@ def _msgs():
     return [{"role": "user", "content": "hi"}]
 
 
-class TestNvidiaProfileWiring:
+class TestCustomVendorModelWiring:
 
 
     def test_nvidia_model_passed(self, transport):
-        profile = get_provider_profile("nvidia")
+        profile = get_provider_profile("custom")
         kwargs = transport.build_kwargs(
             model="nvidia/test-model",
             messages=_msgs(),
@@ -40,7 +40,7 @@ class TestNvidiaProfileWiring:
 
 
     def test_nvidia_tool_messages_drop_name_fields(self, transport):
-        profile = get_provider_profile("nvidia")
+        profile = get_provider_profile("custom")
         msgs = [
             {"role": "user", "content": "run a command"},
             {
@@ -85,9 +85,9 @@ class TestNvidiaProfileWiring:
         assert msgs[2]["tool_name"] == "terminal"
 
 
-class TestDeepSeekProfileWiring:
+class TestCustomOutputLimitWiring:
     def test_deepseek_no_forced_max_tokens(self, transport):
-        profile = get_provider_profile("deepseek")
+        profile = get_provider_profile("custom")
         kwargs = transport.build_kwargs(
             model="deepseek-chat",
             messages=_msgs(),

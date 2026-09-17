@@ -78,57 +78,12 @@ function renderPanel(onSelectModel = vi.fn()) {
   return { onSelectModel, content }
 }
 
-describe('ModelMenuPanel MoA presets', () => {
-  it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
-    const { content, onSelectModel } = renderPanel()
-
-    // moaOptions is async (useQuery) — wait for the preset row to mount.
-    const row = await content.findByText('MoA: BeastMode')
-    fireEvent.click(row)
-
-    // #54670: must route through the persistent model-switch path
-    // i.e. onSelectModel with provider 'moa' (which session-scopes live-session
-    // switches), NOT a one-shot command.dispatch that reverts after a turn.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
-  })
-
-  it('shows the check on the preset that matches the current moa selection', async () => {
-    $currentProvider.set('moa')
-    $currentModel.set('BeastMode')
+describe('ModelMenuPanel retired providers', () => {
+  it('does not offer MoA presets from a stale catalog', async () => {
     const { content } = renderPanel()
-
-    const row = await content.findByText('MoA: BeastMode')
-    // The check codicon renders as a sibling within the same row item.
-    const item = row.closest('[role="menuitem"]') ?? row.parentElement
-    expect(item?.querySelector('.codicon-check')).not.toBeNull()
-  })
-
-  it('keeps the virtual moa provider out of the main model groups (presets section only)', async () => {
-    const { content } = renderPanel()
-
-    await content.findByText('MoA: BeastMode')
-
-    // The provider group header would read "Mixture of Agents"; the presets
-    // section header reads "MoA presets". Only the latter should exist.
-    // Radix DropdownMenu portals its content to document.body, so assert
-    // against the body (not content.container) to see the rendered items.
-
-    // eslint-disable-next-line no-restricted-globals
-    expect(document.body.textContent).toContain('MoA presets')
-    // eslint-disable-next-line no-restricted-globals
-    expect(document.body.textContent).not.toContain('Mixture of Agents')
-  })
-
-  it('renders presets from the catalog even before a session exists', async () => {
-    $activeSessionId.set('')
-    const { onSelectModel, content } = renderPanel()
-
-    const row = await content.findByText('MoA: BeastMode')
-    fireEvent.click(row)
-
-    // Pre-session picks are UI state shipped on the next session.create — the
-    // row must not be disabled and must still route through onSelectModel.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: null })
+    await content.findByText('DeepSeek')
+    expect(screen.queryByText('MoA: BeastMode')).toBeNull()
+    expect(screen.queryByText('Mixture of Agents')).toBeNull()
   })
 })
 
@@ -250,27 +205,6 @@ describe('ModelMenuPanel search', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onSelectModel).not.toHaveBeenCalled()
-  })
-
-  it('filters MoA presets by the query instead of leaving them as phantom first matches', async () => {
-    const { content, onSelectModel } = renderPanel()
-
-    await content.findByText('MoA: BeastMode')
-
-    const input = screen.getByRole('textbox', { name: 'Search models' })
-    fireEvent.change(input, { target: { value: 'beast' } })
-
-    await vi.waitFor(() => {
-      expect(rowWithText(content, /MoA: BeastMode/)).not.toBeNull()
-    })
-    expect(rowWithText(content, /MoA: default/)).toBeNull()
-
-    // The surviving preset IS the first row, so Enter commits it.
-    fireEvent.keyDown(input, { key: 'Enter' })
-
-    await vi.waitFor(() => {
-      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
-    })
   })
 })
 

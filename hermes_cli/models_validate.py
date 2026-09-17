@@ -107,17 +107,6 @@ class _Request:
 
 # ── Provider branches (None = not decided here) ─────────────────────────
 
-def _validate_moa(req: _Request) -> dict[str, Any]:
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
-
-        cfg = normalize_moa_config(load_config().get("moa") or {})
-        if req.requested in cfg["presets"]:
-            return _accept()
-        return _reject(f"MoA preset `{req.requested}` was not found. Run `hermes moa list`.")
-    except Exception as exc:
-        return _reject(f"Could not read MoA presets: {exc}")
 
 
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
@@ -126,101 +115,12 @@ def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
-def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
-    """OpenRouter presets are account-scoped, so ``@preset/<slug>`` never appears in the public
-    /v1/models listing. A bare preset is accepted unverified; ``<model>@preset/<slug>`` validates
-    the base model; the full id (suffix included) goes to the wire. OpenRouter validates the slug
-    at request time."""
-    marker = "@preset/"
-    if marker not in req.requested:
-        return None
-    if req.requested.count(marker) != 1:
-        preset_slug, preset_base = "", req.requested
-    else:
-        preset_base, preset_slug = req.requested.split(marker, 1)
-    if re.fullmatch(r"[A-Za-z0-9._~-]+", preset_slug) is None:
-        return _reject("OpenRouter preset slugs must be non-empty URL-safe identifiers using only "
-                       "letters, digits, '.', '_', '~', or '-'.")
-    if not preset_base:
-        return _soft_accept(None)
-    req.lookup = preset_base
-    return None
 
 
-def _validate_lmstudio(req: _Request) -> dict[str, Any]:
-    from hermes_cli import models_local as _ml
-    from hermes_cli.auth import AuthError
-
-    # probe_lmstudio_models distinguishes None (unreachable / malformed) from [] (reachable,
-    # nothing chat-capable loaded); fetch_lmstudio_models collapses both to [].
-    try:
-        models = _ml.probe_lmstudio_models(api_key=req.api_key, base_url=req.base_url)
-    except AuthError as exc:
-        return _reject(f"{exc} Set `LM_API_KEY` (or update it) to match the server's bearer token.")
-    if models is None:
-        return _reject(f"Could not reach LM Studio's `/api/v1/models` to validate `{req.requested}`.")
-    if not models:
-        return _reject("LM Studio is reachable but no chat-capable models are loaded. "
-                       f"Load `{req.requested}` in LM Studio (Developer tab → Load Model) and try again.")
-    if req.lookup in set(models):
-        return _accept()
-    return _reject(f"Model `{req.requested}` was not found in LM Studio's model listing.")
 
 
-def _ollama_probe_headers(req: _Request) -> dict[str, str]:
-    """Headers for the Ollama native probe. Configured ``providers.ollama.extra_headers`` apply only
-    when the probed endpoint is the configured one (never leak them to a different host). Caller
-    headers win; a caller ``api_key`` becomes the Authorization header unless the caller sent one."""
-    from hermes_cli import models as _m
-    from hermes_cli import models_local as _ml
-    from hermes_cli.models_local import _configured_ollama_base_url, _drop_authorization
-
-    configured_base = _configured_ollama_base_url()
-    configured_allowed = not configured_base or _ml._same_ollama_native_root(req.base_url or "", configured_base)
-    configured = _m._get_ollama_native_headers(req.base_url, api_key=req.api_key) if configured_allowed else {}
-    if req.headers is None:
-        return configured
-    out = dict(configured)
-    _drop_authorization(out)
-    out.update(req.headers)
-    if req.api_key and not any(key.lower() == "authorization" for key in req.headers):
-        _drop_authorization(out)
-        out["Authorization"] = f"Bearer {req.api_key}"
-    return out
 
 
-def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
-    """Runs for EVERY provider: the native ``/api/tags`` catalog is used whenever the endpoint
-    looks like a local Ollama server. Also resolves ``base_url`` for the raw ``ollama`` provider,
-    which later branches (custom) rely on."""
-    from hermes_cli import models as _m
-    from hermes_cli import models_local as _ml
-
-    if str(req.provider or "").strip().lower() == "ollama" and not req.base_url:
-        req.base_url = _m._get_ollama_base_url()
-    headers = _ollama_probe_headers(req)
-    if not _ml.should_use_ollama_native_catalog(req.provider, req.base_url, headers=headers):
-        return None
-    models = _ml.probe_ollama_local_models(req.base_url, headers=headers)
-    if models is None:
-        # A failed native probe is not authoritative; fall back to the OpenAI-compatible catalog.
-        models = _m.probe_api_models(
-            req.api_key, _ml._normalize_openai_base_url(req.base_url), request_headers=headers,
-        ).get("models")
-    if models is None:
-        return _soft_accept(
-            f"Note: could not reach this Ollama endpoint's `/api/tags` model listing to validate `{req.requested}`. "
-            "Hermes will save the model name, but local Ollama model discovery could not verify it."
-        )
-    match = _match_in_catalog(req.lookup, models, suggest_label="Similar local Ollama models")
-    if match.exact:
-        return _accept()
-    empty_hint = " No models are currently listed by `/api/tags`." if not models else ""
-    return _soft_accept(
-        f"Note: `{req.requested}` was not found in this Ollama endpoint's `/api/tags` model listing."
-        f"{empty_hint} It may still work if the server supports hidden or aliased models."
-        f"{match.suggestion_text}"
-    )
 
 
 def _validate_custom(req: _Request) -> dict[str, Any]:
@@ -270,97 +170,10 @@ def _static_catalog(normalized: str) -> list[str]:
         return []
 
 
-_STATIC_FAMILY_PREFIXES = {
-    # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists for entitlement-gated *hidden*
-    # slugs the curated listing hasn't caught up with — but those are always the provider's own family
-    # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an unrelated typed name (e.g. `qwen3.5-4b`,
-    # `llama-3.1-8b`) here turns what should be an actionable "did you mean --provider <x>?" error into a
-    # confusing success that 400s on the next turn. Only soft- accept names that share the provider's family
-    # prefix; reject the rest with guidance to pin the right provider.
-    "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-    "xai-oauth": ("grok-",),
-}
-_STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
 
 
-def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
-    """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
-    Returns None (fall through) when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
-    if req.normalized == "openai-codex":
-        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
-
-        # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
-        # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real
-        # hidden provider slug — soft-accepting one silently runs at 272K on a different model.
-        if req.lookup.strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and req.lookup not in set(catalog):
-            if is_codex_context_variant(req.lookup):
-                # Valid variant a stale catalog hasn't synthesized yet.
-                return _accept()
-            base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
-            return _reject(
-                f"`{req.requested}` is not a valid large-context variant — `{base_guess}` enforces the "
-                "standard 272K window on Codex, so no `-900k` option exists for it. Pick the base model, "
-                "or a verified variant from the `/model` picker (e.g. `gpt-5.6-sol-900k`)."
-            )
-    if not catalog:
-        return None
-    match = _match_in_catalog(req.lookup, catalog)
-    verdict = match.verdict(req)
-    if verdict is not None:
-        return verdict
-    label = _STATIC_LABELS[req.normalized]
-    # Plausibility gate: the soft-accept exists for entitlement-gated *hidden* slugs the curated
-    # listing hasn't caught up with — always the provider's own family (gpt-* / grok-*). An
-    # unrelated name (`qwen3.5-4b`) would turn an actionable "did you mean --provider <x>?" into
-    # a confusing success that 400s on the next turn, so reject it with guidance instead.
-    prefixes = _STATIC_FAMILY_PREFIXES.get(req.normalized, ())
-    lower = req.lookup.strip().lower()
-    if prefixes and not any(lower.startswith(p) for p in prefixes):
-        return _reject(
-            f"`{req.requested}` doesn't look like a {label} model and isn't in its listing, so it was not "
-            "accepted. If it belongs to another configured provider, switch with `--provider <slug>` "
-            f"(or select it from the `/model` picker).{match.suggestion_text}"
-        )
-    return _soft_accept(
-        f"Note: `{req.requested}` was not found in the {label} model listing. "
-        "It may still work if your account has access to a newer or hidden model ID."
-        f"{match.suggestion_text}"
-    )
 
 
-def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
-    """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
-    Returns None when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
-    if not catalog:
-        return None
-    match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
-    return match.verdict(req) or _soft_accept(
-        f"Note: `{req.requested}` was not found in the MiniMax catalog."
-        f"{match.suggestion_text}"
-        "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
-        "\n  The model may still work if it exists on the server."
-    )
-
-
-def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
-    """Native Anthropic: /v1/models needs x-api-key (or OAuth Bearer) + anthropic-version, so the
-    generic Bearer probe 401s — use the native fetcher. None (fall through) when no token is
-    resolvable or the network failed."""
-    from hermes_cli import models as _m
-
-    models = _m._fetch_anthropic_models(base_url=req.base_url or None, api_key=req.api_key or None)
-    if models is None:
-        return None
-    match = _match_in_catalog(req.lookup, models, suggest_query=req.requested)
-    # Accept anyway — Anthropic gates newer/preview models (snapshot IDs, early access) behind
-    # accounts even though they aren't listed on /v1/models.
-    return match.verdict(req) or _soft_accept(
-        f"Note: `{req.requested}` was not found in Anthropic's /v1/models listing. "
-        f"It may still work if you have early-access or snapshot IDs."
-        f"{match.suggestion_text}"
-    )
 
 
 def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
@@ -448,25 +261,6 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     return _reject(f"Model `{req.requested}` was not found in this provider's model listing.{match.suggestion_text}")
 
 
-def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
-    """Bedrock's runtime URL has no /models; discovery goes through the AWS control plane
-    (ListFoundationModels + ListInferenceProfiles). Any failure falls through (None)."""
-    try:
-        from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
-
-        region = resolve_bedrock_runtime_region()
-        discovered_ids = {m["id"] for m in discover_bedrock_models(region)}
-        match = _match_in_catalog(req.requested, list(discovered_ids), suggest_cutoff=0.4)
-        if match.exact:
-            return _accept()
-        # Still accept (custom inference profiles / cross-account access), but warn.
-        return _soft_accept(
-            f"Note: `{req.requested}` was not found in Bedrock model discovery for {region}. "
-            f"It may still work with custom inference profiles or cross-account access."
-            f"{match.suggestion_text}"
-        )
-    except Exception:
-        return None
 
 
 def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
@@ -505,27 +299,14 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
     return lambda req: req.normalized in providers
 
 
-# (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
-# BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
-# curated-catalog fallback (always decides).
-_LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
-    (_for("moa"), _validate_moa),
+# Only supported account identities reach the catalog ladder.
+_LADDER = (
     (lambda req: True, _reject_whitespace),
-    (_for("openrouter"), _parse_openrouter_preset),
-    (_for("lmstudio"), _validate_lmstudio),
-    (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
-    (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
-    (_for("minimax", "minimax-cn"), _validate_minimax),
-    (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
     (lambda req: True, _validate_live_listing),
-    # API unreachable — accept and persist, but warn so typos don't silently break things.
-    (_for("bedrock"), _validate_bedrock),
     (lambda req: True, _validate_catalog_fallback),
 )
-
 
 def validate_requested_model(
     model_name: str,
@@ -543,9 +324,8 @@ def validate_requested_model(
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
-    normalized = _m.normalize_provider(provider)
-    if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
-        normalized = "custom"
+    from hermes_cli.provider_policy import require_supported_provider
+    normalized = require_supported_provider(provider or "")
     lookup = requested
     if normalized == "copilot":
         lookup = _m.normalize_copilot_model_id(requested, api_key=api_key) or requested

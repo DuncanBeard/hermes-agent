@@ -4,11 +4,9 @@ import {
   ShieldOff,
   ExternalLink,
   RefreshCw,
-  Terminal,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Card,
@@ -193,17 +191,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                           {t.oauth.notConnected.split("{command}")[1] ?? ""}
                         </span>
 
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <code className="font-courier truncate text-xs opacity-60">
-                            {p.cli_command}
-                          </code>
 
-                          <CopyButton
-                            text={p.cli_command}
-                            label={t.oauth.cli}
-                            copiedLabel={t.oauth.copied}
-                          />
-                        </div>
                       </>
                     )}
                     {p.status.error && (
@@ -228,7 +216,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       </Button>
                     </a>
                   )}
-                  {!p.status.logged_in && p.flow !== "external" && (
+                  {!p.status.logged_in && (
                     <Button
                       size="sm"
                       className="uppercase"
@@ -237,7 +225,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       {t.oauth.login}
                     </Button>
                   )}
-                  {p.status.logged_in && p.flow !== "external" && (
+                  {p.status.logged_in && (
                     <Button
                       size="sm"
                       outlined
@@ -249,12 +237,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       {t.oauth.disconnect}
                     </Button>
                   )}
-                  {p.status.logged_in && p.flow === "external" && (
-                    <span className="text-xs text-text-tertiary italic px-2">
-                      <Terminal className="h-3 w-3 inline mr-0.5" />
-                      {t.oauth.managedExternally}
-                    </span>
-                  )}
+
                 </div>
               </div>
             );

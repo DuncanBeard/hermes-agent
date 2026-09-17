@@ -23,21 +23,9 @@ def exercise_surfaces(agent, captures, url, home, config):
     assert response.get("status") == "completed", response
     results["full-child"] = captures[start:]
 
-    slot = {"provider": "fixture-local", "model": "fixture", "max_tokens": 23}
-    config["moa"] = {"default_preset": "fixture", "presets": {"fixture": {
-        "reference_models": [slot, slot], "aggregator": slot,
-        "max_tokens": 29, "reference_max_tokens": 31,
-    }}}
-    config["auxiliary"] = {"compression": {"provider": "fixture-local", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}}
+    config["auxiliary"] = {"compression": {"provider": "custom:fixture-local", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}}
     config["_setup_done"] = True
     (home / "config.yaml").write_text(json.dumps(config))
-    from agent.moa_loop import MoAClient
-    start = len(captures)
-    response = MoAClient("fixture").chat.completions.create(model="fixture", messages=[{"role": "user", "content": "Return fixture"}])
-    assert response.choices[0].message.content == "LOCAL_CAPTURE_ONLY"
-    results["full-moa"] = captures[start:]
-    assert len(results["full-moa"]) == 3, results["full-moa"]
-
     from agent.auxiliary_client import call_llm
     start = len(captures)
     response = call_llm(task="compression", messages=[{"role": "user", "content": "Return fixture"}])
@@ -72,22 +60,11 @@ def exercise_surfaces(agent, captures, url, home, config):
     results["internal-review-budget"] = captures[start:]
     assert results["internal-review-budget"][0]["body"]["max_tokens"] == 43
 
-    import boto3
-    from agent.transports.bedrock import BedrockTransport
-    native = boto3.client("bedrock-runtime", region_name="us-east-1", endpoint_url=url,
-                          aws_access_key_id="fixture", aws_secret_access_key="fixture")
-    kwargs = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", [{"role": "user", "content": "fixture"}])
-    kwargs.pop("__bedrock_converse__", None)
-    kwargs.pop("__bedrock_region__", None)
-    start = len(captures)
-    native.converse(**kwargs)
-    results["bedrock-sdk-local-not-aws"] = captures[start:]
-
     master, slave = pty.openpty()
     env = {k: v for k, v in os.environ.items() if not any(s in k for s in ("API_KEY", "TOKEN", "SECRET"))}
     env.update(HOME=str(home), HERMES_HOME=str(home), HERMES_MAX_TOKENS="13", TERM="xterm", NO_COLOR="1")
     start = len(captures)
-    proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "chat", "--provider", "fixture-local", "-m", "fixture", "-q", "Return fixture"], stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env)
+    proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "chat", "--provider", "custom:fixture-local", "-m", "fixture", "-q", "Return fixture"], stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 60

@@ -181,16 +181,6 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
-def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None, requested: Any) -> Any:
-    """Raise Gemini output caps that thinking tokens (billed against max_tokens) would otherwise exhaust."""
-    thinking_config = _build_gemini_thinking_config(model, reasoning_config)
-    if not thinking_config:
-        return requested
-    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
-
-    return _effective_gemini_max_output_tokens(requested, thinking_config)
-
-
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     return bool(normalized) and "generativelanguage.googleapis.com" in normalized and normalized.endswith("/openai")
@@ -278,11 +268,10 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
     max_tokens_fn = params.get("max_tokens_param_fn")
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
+            api_kwargs.update(max_tokens_fn(candidate))
             return
     if profile_max and max_tokens_fn:
-        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
-
+        api_kwargs.update(max_tokens_fn(profile_max))
 
 
 def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile: Any = None) -> dict[str, Any]:
@@ -448,16 +437,6 @@ class ChatCompletionsTransport(ProviderTransport):
                 off = thinking_off or _effort == "none"
                 extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
 
-        if str(params.get("provider_name") or "").strip().lower() == "gemini":
-            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
-            if _is_gemini_openai_compat_base_url(base_url):
-                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
-                if thinking_config:
-                    openai_compat_extra = extra_body.get("extra_body", {})
-                    openai_compat_extra["google"] = {**openai_compat_extra.get("google", {}), "thinking_config": thinking_config}
-                    extra_body["extra_body"] = openai_compat_extra
-            elif raw_thinking_config:
-                extra_body["thinking_config"] = raw_thinking_config
 
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
@@ -503,18 +482,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 api_kwargs[k] = v
 
         if extra_body:
-            # Native Gemini speaks Google's REST schema: OpenAI-style extra_body
-            # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.
-            # The native client only reads thinking_config, so drop everything else.
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
-            except Exception:
-                _native_gemini = False
-            if _native_gemini:
-                extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
-            if extra_body:
-                api_kwargs["extra_body"] = extra_body
+            api_kwargs["extra_body"] = extra_body
         return _finish_kwargs(
             api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
         )

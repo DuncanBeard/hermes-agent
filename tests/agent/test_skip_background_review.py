@@ -17,9 +17,9 @@ def _make_agent(skip_background_review: bool = False) -> AIAgent:
     """Construct a minimally-configured AIAgent for unit testing."""
     return AIAgent(
         model="openai/gpt-4o-mini",
-        provider="openrouter",
+        provider="custom",
         api_key="sk-dummy",
-        base_url="https://openrouter.ai/api/v1",
+        base_url="https://example.invalid/v1",
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -133,7 +133,9 @@ def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_
     memory sync and the background-review gate still see the turn as having produced nothing."""
     from hermes_constants import profile_cli_selector
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    profile_home = tmp_path / ".hermes" / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
     selector = profile_cli_selector()
     assert selector.strip()
     agent = _make_agent()

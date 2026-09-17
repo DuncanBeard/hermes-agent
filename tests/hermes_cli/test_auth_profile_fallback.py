@@ -57,19 +57,13 @@ def _write(path: Path, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
     from hermes_cli.auth import read_credential_pool
 
     # No global auth.json written at all.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
+        "custom:primary": [{
             "id": "prof-1",
             "label": "profile",
             "auth_type": "api_key",
@@ -79,14 +73,14 @@ def test_missing_global_auth_file_is_safe(profile_env):
         }],
     }))
 
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
-    assert read_credential_pool("anthropic") == []
+    assert read_credential_pool("custom:primary")[0]["id"] == "prof-1"
+    assert read_credential_pool("custom:other") == []
 
 
 def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
     (profile_env["global"] / "auth.json").write_text("{not valid json")
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
+        "custom:primary": [{
             "id": "prof-1",
             "label": "profile",
             "auth_type": "api_key",
@@ -99,9 +93,9 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
     from hermes_cli.auth import read_credential_pool
 
     # Profile reads still work; malformed global is silently ignored.
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
+    assert read_credential_pool("custom:primary")[0]["id"] == "prof-1"
     # And no fallback for anthropic since global is unreadable.
-    assert read_credential_pool("anthropic") == []
+    assert read_credential_pool("custom:other") == []
 
 
 # ---------------------------------------------------------------------------
@@ -149,84 +143,6 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ---------------------------------------------------------------------------
 
 
-def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_env):
-    """Stale empty profile Codex state must not block the global credential pool."""
-    from hermes_cli.auth import resolve_codex_runtime_credentials
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openai-codex": [{
-            "id": "glob-codex",
-            "label": "global-codex",
-            "auth_type": "oauth",
-            "priority": 0,
-            "source": "manual:device_code",
-            "access_token": "global-codex-access-token",
-            "refresh_token": "global-codex-refresh-token",
-        }],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(
-        providers={
-            "openai-codex": {
-                "auth_mode": "chatgpt",
-                "tokens": {"access_token": "", "refresh_token": ""},
-            },
-        },
-        pool={"openai-codex": []},
-    ))
-
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
-
-    assert creds["source"] == "credential_pool"
-    assert creds["api_key"] == "global-codex-access-token"
-
-    # Profile rows shadow the root the moment they exist (read_credential_pool precedence).
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openai-codex": [{"id": "prof", "auth_type": "oauth", "priority": 0,
-                          "access_token": "profile-codex-access-token", "refresh_token": "r"}],
-    }))
-    assert resolve_codex_runtime_credentials(refresh_if_expiring=False)["api_key"] == "profile-codex-access-token"
-
-
-def test_codex_cooldown_clear_writes_to_the_store_that_owns_the_borrowed_pool(profile_env):
-    """A restored quota must unfreeze the ROOT row a profile borrows; clearing the (empty)
-    profile store would leave every later resolve stuck on the stale cooldown."""
-    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openai-codex": [{"id": "glob", "auth_type": "oauth", "priority": 0,
-                          "access_token": "global-codex-access-token", "refresh_token": "r",
-                          "last_status": "exhausted", "last_error_reason": "rate_limit",
-                          "last_error_reset_at": 4_102_444_800}],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={"openai-codex": []}))
-
-    assert clear_codex_pool_quota_cooldowns() == 1
-    root_rows = json.loads((profile_env["global"] / "auth.json").read_text())["credential_pool"]["openai-codex"]
-    assert root_rows[0].get("last_error_reset_at") is None
-
-
-def test_codex_cooldown_clear_never_touches_root_when_profile_owns_rows(profile_env):
-    """A profile with its own Codex rows is the owner: the root's cooldown state is not ours to
-    clear, even when none of the profile's rows are exhausted (0 cleared, root byte-identical)."""
-    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
-
-    root_file = profile_env["global"] / "auth.json"
-    _write(root_file, _make_auth_store(pool={
-        "openai-codex": [{"id": "glob", "auth_type": "oauth", "priority": 0,
-                          "access_token": "global-codex-access-token", "refresh_token": "r",
-                          "last_status": "exhausted", "last_error_reason": "rate_limit",
-                          "last_error_reset_at": 4_102_444_800}],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openai-codex": [{"id": "prof", "auth_type": "oauth", "priority": 0,
-                          "access_token": "profile-codex-access-token", "refresh_token": "r"}],
-    }))
-    before = root_file.read_bytes()
-
-    assert clear_codex_pool_quota_cooldowns() == 0
-    assert root_file.read_bytes() == before
-
-
 def test_root_write_through_is_visible_to_the_next_fallback_read(profile_env):
     """``_save_auth_store(target_path=root)`` must invalidate the mtime memo: a same-tick
     read-after-write (coarse-mtime filesystems) would otherwise keep serving the stale root."""
@@ -234,23 +150,21 @@ def test_root_write_through_is_visible_to_the_next_fallback_read(profile_env):
     from hermes_cli.auth import _save_auth_store, read_credential_pool
 
     root_file = profile_env["global"] / "auth.json"
-    _write(root_file, _make_auth_store(pool={"openai-codex": [{"id": "glob", "access_token": "old"}]}))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={"openai-codex": []}))
-    assert read_credential_pool("openai-codex")[0]["access_token"] == "old"  # primes the memo
+    _write(root_file, _make_auth_store(pool={"nous": [{"id": "glob", "access_token": "old"}]}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={"nous": []}))
+    assert read_credential_pool("nous")[0]["access_token"] == "old"  # primes the memo
     stat = root_file.stat()
 
-    _save_auth_store(_make_auth_store(pool={"openai-codex": [{"id": "glob", "access_token": "new"}]}),
+    _save_auth_store(_make_auth_store(pool={"nous": [{"id": "glob", "access_token": "new"}]}),
                      target_path=root_file)
     os.utime(root_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # simulate a same-tick write
 
-    assert read_credential_pool("openai-codex")[0]["access_token"] == "new"
+    assert read_credential_pool("nous")[0]["access_token"] == "new"
 
 
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +176,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     from hermes_cli.auth import read_credential_pool, write_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
+        "custom:primary": [{
             "id": "glob-1",
             "label": "global",
             "auth_type": "api_key",
@@ -272,7 +186,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
         }],
     }))
 
-    write_credential_pool("openrouter", [{
+    write_credential_pool("custom:primary", [{
         "id": "prof-new",
         "label": "profile-new",
         "auth_type": "api_key",
@@ -283,16 +197,14 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Global auth.json unchanged.
     global_data = json.loads((profile_env["global"] / "auth.json").read_text())
-    assert global_data["credential_pool"]["openrouter"][0]["id"] == "glob-1"
+    assert global_data["credential_pool"]["custom:primary"][0]["id"] == "glob-1"
 
     # Profile auth.json holds the new entry.
     profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
-    assert profile_data["credential_pool"]["openrouter"][0]["id"] == "prof-new"
+    assert profile_data["credential_pool"]["custom:primary"][0]["id"] == "prof-new"
 
     # Subsequent read returns profile (shadows global).
-    assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
-
-
+    assert [e["id"] for e in read_credential_pool("custom:primary")] == ["prof-new"]
 
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
@@ -354,8 +266,6 @@ def _pool_entry(**overrides) -> dict:
     return entry
 
 
-
-
 def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     """A token change means re-auth: the old cooldown must never carry over.
 
@@ -365,7 +275,7 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     from hermes_cli.auth import write_credential_pool
 
     _write(classic_env / "auth.json", _make_auth_store(pool={
-        "openrouter": [_pool_entry(
+        "custom:primary": [_pool_entry(
             access_token="sk-old",
             last_status="exhausted",
             last_status_at=time.time() - 60,  # newer AND unexpired
@@ -374,10 +284,10 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     }))
 
     # Same entry id, freshly re-authed with a new token and cleared status.
-    write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
+    write_credential_pool("custom:primary", [_pool_entry(access_token="sk-new")])
 
     data = json.loads((classic_env / "auth.json").read_text())
-    persisted = data["credential_pool"]["openrouter"][0]
+    persisted = data["credential_pool"]["custom:primary"][0]
     assert persisted["access_token"] == "sk-new"
     assert persisted.get("last_status") != "exhausted"
     assert persisted.get("last_error_code") is None

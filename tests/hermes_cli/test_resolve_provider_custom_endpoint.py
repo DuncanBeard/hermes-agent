@@ -22,7 +22,6 @@ def isolated_home(tmp_path, monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL",
                 "OPENROUTER_BASE_URL", "HERMES_INFERENCE_PROVIDER", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
     from hermes_cli import free_tier_bootstrap as fb
     fb.reset_for_tests()
     return home
@@ -35,10 +34,6 @@ def isolated_home(tmp_path, monkeypatch):
             "model:\n  default: nvidia/Nemotron\n  provider: custom\n"
             "  base_url: http://127.0.0.1:8000/v1\n  api_key: dummy\n",
             id="provider-custom",
-        ),
-        pytest.param(
-            "model:\n  default: qwen3\n  provider: vllm\n  base_url: http://127.0.0.1:8000/v1\n",
-            id="local-server-alias",
         ),
         pytest.param(
             "model:\n  default: qwen3\n  base_url: http://localhost:8080/v1\n",
@@ -66,10 +61,11 @@ def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_h
         "model:\n  default: some/model\n  provider: openrouter\n  base_url: https://api.z.ai/v1\n",
         encoding="utf-8",
     )
-    from hermes_cli.auth import AuthError, resolve_provider
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.provider_policy import UnsupportedProviderError
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
-    with pytest.raises(AuthError):
+    with pytest.raises(UnsupportedProviderError):
         resolve_provider("auto")
     assert run_bootstrap(announce=False).provider_configured is False
 

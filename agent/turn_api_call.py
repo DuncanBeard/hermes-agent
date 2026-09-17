@@ -49,8 +49,7 @@ def _should_stream(agent: Any) -> bool:
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
-    if agent.provider in {"copilot-acp"} or _base.startswith(("acp://", "acp+tcp://")):
-        return False
+
     if not agent._has_stream_consumers():
         if agent.provider == "moa":
             return False

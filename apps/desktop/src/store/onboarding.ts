@@ -32,7 +32,6 @@ export type OnboardingFlow =
   | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
   | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
   | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
-  | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
   | { provider: OAuthProvider; status: 'success' }
   | {
       // After successful credential acquisition, before completing
@@ -298,13 +297,14 @@ async function fetchProviderDefaultModel(
     return null
   }
 
-  // Try each preferred slug (lowercased), fall back to the first provider
-  // returned (model.options orders by recency / authenticated state, so
-  // the just-authenticated provider is usually first anyway).
+  // A successful sign-in must never switch to an unrelated provider just
+  // because the requested provider is missing from the returned inventory.
   const lower = preferredSlugs.map(s => s.toLowerCase())
+  const matched = providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase()))
 
-  const matched =
-    providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase())) ?? providers[0]
+  if (!matched) {
+    return null
+  }
 
   const models = matched.models ?? []
 
@@ -804,7 +804,12 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   clearPoll()
 
   if (provider.flow === 'external') {
-    setFlow({ status: 'external_pending', provider, copied: false })
+    setFlow({
+      status: 'error',
+      provider,
+      message:
+        'External CLI sign-in is no longer supported. Update the backend and use direct GitHub Copilot device sign-in, Nous, or a custom endpoint.'
+    })
 
     return
   }
@@ -980,38 +985,6 @@ export async function copyDeviceCode() {
 
   const sid = flow.start.session_id
   await copyAndFlash(flow.start.user_code, f => f.status === 'polling' && f.start.session_id === sid)
-}
-
-export async function copyExternalCommand() {
-  const { flow } = $desktopOnboarding.get()
-
-  if (flow.status !== 'external_pending') {
-    return
-  }
-
-  const id = flow.provider.id
-  await copyAndFlash(flow.provider.cli_command, f => f.status === 'external_pending' && f.provider.id === id)
-}
-
-export async function recheckExternalSignin(ctx: OnboardingContext) {
-  ctx = { ...ctx }
-  flowProfile = ctx.profile
-  const { flow } = $desktopOnboarding.get()
-
-  if (flow.status !== 'external_pending') {
-    return
-  }
-
-  const { provider } = flow
-  await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
-    setFlow({
-      status: 'error',
-      provider,
-      message:
-        reason?.trim() ||
-        `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
-    })
-  )
 }
 
 export async function saveOnboardingApiKey(

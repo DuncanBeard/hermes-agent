@@ -36,7 +36,7 @@ def _acp_agent():
 def _state():
     return types.SimpleNamespace(
         session_id="s1", cwd=".", model="claude-sonnet-5",
-        agent=types.SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com", api_key="k"))
+        agent=types.SimpleNamespace(provider="copilot", base_url="https://api.githubcopilot.com", api_key="k"))
 
 
 def test_acp_and_dashboard_reject_what_switch_model_rejects(monkeypatch):
@@ -65,10 +65,10 @@ def test_acp_explicit_provider_prefix_becomes_explicit_provider(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
     agent, made = _acp_agent()
-    old, new_provider, model = agent._switch_model(_state(), "anthropic:claude-sonnet-5", keep_endpoint=True)
-    assert (seen["explicit_provider"], seen["raw_input"]) == ("anthropic", "claude-sonnet-5")
-    assert (old, new_provider, model) == ("anthropic", "anthropic", "claude-sonnet-5")
-    assert made["requested_provider"] == "anthropic" and made["base_url"] == "https://api.anthropic.com"
+    old, new_provider, model = agent._switch_model(_state(), "copilot:claude-sonnet-5", keep_endpoint=True)
+    assert (seen["explicit_provider"], seen["raw_input"]) == ("copilot", "claude-sonnet-5")
+    assert (old, new_provider, model) == ("copilot", "copilot", "claude-sonnet-5")
+    assert made["requested_provider"] == "copilot" and made["base_url"] == "https://api.githubcopilot.com"
 
 
 def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch):
@@ -81,7 +81,7 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
 
     def _switch(**kw):
         seen["thread"] = threading.current_thread()
-        return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="anthropic")
+        return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="copilot")
 
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
     agent, _made = _acp_agent()
@@ -90,7 +90,7 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
 
     async def _run():
         loop_thread = threading.current_thread()
-        resp = await agent.set_session_model("anthropic:claude-sonnet-5", "s1")
+        resp = await agent.set_session_model("copilot:claude-sonnet-5", "s1")
         return resp, loop_thread
 
     resp, loop_thread = asyncio.run(_run())

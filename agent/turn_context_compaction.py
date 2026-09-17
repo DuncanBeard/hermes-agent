@@ -213,17 +213,7 @@ def _idle_compaction(
         out.current_turn_user_idx = _reanchor(agent, out.messages, user_message)
 
 
-def _codex_native_auto_compaction(agent: Any) -> bool:
-    """Codex app-server threads are compacted by the codex agent itself; Hermes only
-    initiates compaction in "hermes" mode."""
-    return (
-        # See #36801.
-        getattr(agent, "api_mode", None) == "codex_app_server"
-        and str(
-            getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
-        ).lower()
-        in {"native", "off"}
-    )
+
 
 
 def _preflight_compression(
@@ -262,7 +252,6 @@ def _preflight_compression(
     _preflight_deferred = not getattr(agent, "_request_pressure_anchored", False) and getattr(
         _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
     )(_preflight_tokens)
-    _codex_native_auto = _codex_native_auto_compaction(agent)
 
     if not _preflight_deferred:
         # Display-only seed: a real provider reading wins and the -1 sentinel stays
@@ -295,12 +284,6 @@ def _preflight_compression(
             # Over threshold but blocked by the summary-LLM cooldown — surface a warning.
             _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
             _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
-    elif _codex_native_auto:
-        logger.info(
-            "Skipping Hermes preflight compression for codex app-server "
-            "(mode=%s); Hermes will not start thread compaction here.",
-            getattr(agent, "codex_app_server_auto_compaction", "native"),
-        )
     else:
         _should_compress_now = _compressor.should_compress(_preflight_tokens)
         if not _should_compress_now:
@@ -332,7 +315,7 @@ def _preflight_compression(
         _clear_overflow_warn(agent)
         # Engine maintenance only when NO skip-branch fired: cooldown, deferred
         # estimate, or codex-native route keep the engine hook unconsulted.
-        if not (_compression_cooldown or _preflight_deferred or _codex_native_auto):
+        if not (_compression_cooldown or _preflight_deferred):
             _engine_preflight_maintenance(
                 agent, out, _compressor, _preflight_tokens, system_message, effective_task_id
             )

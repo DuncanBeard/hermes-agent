@@ -334,7 +334,7 @@ def _build_anthropic_client_with_bearer_hook(
     placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
-    from agent.azure_identity_adapter import build_bearer_http_client
+    from agent.bearer_auth import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
@@ -410,29 +410,6 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
     return _new_sdk_client(sdk, kwargs, headers)
-
-
-def build_anthropic_bedrock_client(region: str):
-    """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
-    SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
-    budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
-    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
-    A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
-    (primary, auxiliary, per-request rebuild) enforces it."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
-    sdk = _require_sdk("the Bedrock provider")
-    if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
-    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
-    # launch profile's process env); unscoped passes nothing and keeps the default chain.
-    scoped = scoped_aws_session_kwargs()
-    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
-                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
-    return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
-        max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
-        default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
-    )
 
 
 def _normalize_to_mcp_wire(name: str) -> str:
@@ -640,14 +617,8 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
 
 
 def _is_stream_unavailable_error(exc: Exception) -> bool:
-    """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
-    if "stream" in err_lower and "not supported" in err_lower:
-        return True
-    if "invokemodelwithresponsestream" not in err_lower:
-        return False
-    from agent.bedrock_adapter import is_streaming_access_denied_error
-    return is_streaming_access_denied_error(exc)
+    return "stream" in err_lower and "not supported" in err_lower
 
 
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):

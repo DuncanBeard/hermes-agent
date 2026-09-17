@@ -838,11 +838,6 @@ def _probe_mcp_status() -> list:
     return get_mcp_status()
 
 
-def _codex_runtime_active() -> bool:
-    """True when the codex_app_server runtime is active (tool counts then live inside codex)."""
-    from hermes_cli.codex_runtime_switch import get_current_runtime
-    from hermes_cli.config import load_config
-    return get_current_runtime(load_config()) == "codex_app_server"
 
 
 def _active_profile_name() -> Optional[str]:
@@ -989,11 +984,6 @@ def build_welcome_banner(
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
-    # Flag the codex_app_server runtime so users understand why tool counts may not match what's
-    # reachable (codex builds its own tool list inside the spawned subprocess).
-    if _quiet(_codex_runtime_active, False):
-        right_lines.append(f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
-                           f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]")
     # Show active profile name when not 'default'. Never break the banner over a profiles.py bug.
     _profile_name = _quiet(_active_profile_name)
     if _profile_name and _profile_name != "default":

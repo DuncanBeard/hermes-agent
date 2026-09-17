@@ -50,12 +50,7 @@ def _ic_slot(agent, lock_attr: str, slot: str):
     return getattr(agent, slot)
 
 
-def _ic_codex_method(agent, name: str):
-    """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
-    if getattr(agent, "api_mode", None) != "codex_app_server":
-        return None
-    method = getattr(getattr(agent, "_codex_session", None), name, None)
-    return method if callable(method) else None
+
 
 
 def _ic_abort_active_request(agent, reason: str, failure_log: str) -> None:
@@ -154,12 +149,7 @@ class InterruptControlMixin:
             self._pending_redirect = None
 
         # Codex watches a private interrupt event rather than Hermes' per-thread flag.
-        _request_interrupt = _ic_codex_method(self, "request_interrupt")
-        if _request_interrupt is not None:
-            try:
-                _request_interrupt()
-            except Exception:
-                logger.debug("Failed to interrupt Codex app-server turn", exc_info=True)
+
 
         # Cron turns request on the conversation thread (no nested interrupt-worker deadlock); their client
         # is registered here so this cross-thread interrupt can still shut the sockets.
@@ -234,16 +224,7 @@ class InterruptControlMixin:
             return False
         cleaned = text.strip()
 
-        _native_steer = _ic_codex_method(self, "request_steer")
-        if _native_steer is not None:
-            with _ic_lock(self, "_pending_redirect_lock"):
-                if self._interrupt_requested:
-                    return False
-            try:
-                return bool(_native_steer(cleaned))
-            except Exception:
-                logger.debug("Codex app-server turn/steer failed", exc_info=True)
-                return False
+
 
         # Never kill a tool to deliver guidance; the steer drain puts it on the final tool result.
         # A foreground terminal command would park that delivery until it exits (a 5-minute

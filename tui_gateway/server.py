@@ -1332,7 +1332,6 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
-
 def _clarify_timeout_seconds() -> float | None:
     """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
     historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
@@ -2231,6 +2230,9 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
     except AuthError as primary_exc:
         for entry in _load_fallback_model() or []:
             fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
+            if fb_provider:
+                from hermes_cli.auth import resolve_provider
+                fb_provider = resolve_provider(fb_provider)
             fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
             if not fb_provider or not fb_model:
                 continue
@@ -3181,7 +3183,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # Commands that queue onto _pending_input in the CLI; the slash worker has no reader for that queue, so
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
-    "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
+    "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "undo", "learn",
     "init", "compress", "compact",
 })
 

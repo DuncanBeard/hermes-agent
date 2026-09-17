@@ -48,57 +48,17 @@ afterEach(() => {
 })
 
 describe('onboarding Picker', () => {
-  it('features Nous Portal and hides other providers behind a disclosure', () => {
-    setProviders([makeOAuthProvider('anthropic', 'Anthropic Claude'), makeOAuthProvider('nous', 'Nous Portal')])
+  it('offers only direct Copilot, Nous and custom endpoint setup', () => {
+    setProviders([makeOAuthProvider('nous', 'Nous Portal'), makeOAuthProvider('copilot', 'GitHub Copilot')])
     render(<Picker ctx={ctx} />)
-
     expect(screen.getByText('Nous Portal')).toBeTruthy()
-    expect(screen.getByText('Recommended')).toBeTruthy()
-    // Fireworks stays behind the disclosure with the other alternatives; only
-    // Nous Portal is visible before the user expands the list.
+    expect(screen.getByText('GitHub Copilot')).toBeTruthy()
     expect(screen.queryByText('Fireworks AI')).toBeNull()
-    expect(screen.queryByText('Anthropic API Key')).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
-
-    expect(screen.getByText('Fireworks AI')).toBeTruthy()
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
-  })
-
-  it('shows Fireworks first in the expanded list, ahead of other OAuth providers', () => {
-    setProviders([
-      makeOAuthProvider('openai-codex', 'OpenAI Codex / ChatGPT'),
-      makeOAuthProvider('minimax-oauth', 'MiniMax'),
-      makeOAuthProvider('nous', 'Nous Portal')
-    ])
-    render(<Picker ctx={ctx} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
-
-    const labels = screen
-      .getAllByRole('button')
-      .map(el => el.textContent ?? '')
-      .filter(text => /Nous Portal|Fireworks AI|ChatGPT or Codex|MiniMax|OpenRouter/.test(text))
-
-    const indexOf = (needle: string) => labels.findIndex(text => text.includes(needle))
-    expect(indexOf('Nous Portal')).toBeGreaterThanOrEqual(0)
-    expect(indexOf('Fireworks AI')).toBeGreaterThan(indexOf('Nous Portal'))
-    expect(indexOf('ChatGPT or Codex')).toBeGreaterThan(indexOf('Fireworks AI'))
-    expect(indexOf('MiniMax')).toBeGreaterThan(indexOf('ChatGPT or Codex'))
-  })
-
-  it('shows every provider directly when Nous Portal is absent', () => {
-    setProviders([
-      makeOAuthProvider('anthropic', 'Anthropic Claude'),
-      makeOAuthProvider('openai-codex', 'OpenAI Codex / ChatGPT')
-    ])
-    render(<Picker ctx={ctx} />)
-
-    expect(screen.getByText('Fireworks AI')).toBeTruthy()
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
-    expect(screen.getByText('ChatGPT or Codex Subscription')).toBeTruthy()
-    expect(screen.queryByText('Other sign-in options')).toBeNull()
-    expect(screen.queryByText('Recommended')).toBeNull()
+    expect(screen.queryByText('OpenRouter')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /custom endpoint/i }))
+    expect(screen.getByPlaceholderText('http://127.0.0.1:8000/v1')).toBeTruthy()
+    expect(screen.queryByText('OpenAI')).toBeNull()
+    expect(screen.queryByText('Google Gemini')).toBeNull()
   })
 
   it('offers "choose later" on first run and persists the skip', () => {

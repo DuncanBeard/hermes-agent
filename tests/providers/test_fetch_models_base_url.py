@@ -3,7 +3,7 @@
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from providers.base import ProviderProfile
 
@@ -98,9 +98,6 @@ class TestFetchModelsBaseUrlOverride:
             server.shutdown()
 
 
-
-
-
 class TestCustomProviderBaseUrlPassthrough:
     """Custom provider (ollama/local) should pass base_url through to super."""
 
@@ -190,36 +187,31 @@ class TestFetchModelsRedirectCredentialStripping:
 
 
 class TestModelPickerBaseUrlIntegration:
-    """The /model picker path should pass model.base_url to fetch_models."""
+    """Named custom catalogs use the configured endpoint, not a plugin default."""
 
-    def test_picker_passes_base_url(self):
-        """Verify models.py caller passes base_url to fetch_models."""
-        mock_profile = MagicMock()
-        mock_profile.auth_type = "api_key"
-        mock_profile.base_url = "https://default.api.com"
-        mock_profile.fetch_models.return_value = ["model-a"]
+    def test_picker_passes_base_url(self, tmp_path, monkeypatch):
+        import yaml
+        from hermes_cli.models import provider_model_ids
 
-        with (
-            patch("providers.get_provider_profile", return_value=mock_profile),
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials",
-                  return_value={"api_key": "sk-test", "base_url": "https://custom.proxy.com"}),
-        ):
-            from hermes_cli.models import provider_model_ids
-            result = provider_model_ids("test-provider")
-            # Verify fetch_models was called with base_url
-            mock_profile.fetch_models.assert_called_once()
-            call_kwargs = mock_profile.fetch_models.call_args
-            assert call_kwargs.kwargs.get("base_url") == "https://custom.proxy.com"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server, port = _start_server([{"id": "proxy-model"}])
+        try:
+            (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+                "providers": {"test-provider": {
+                    "base_url": f"http://127.0.0.1:{port}", "api_key": "fixture-key",
+                }},
+            }), encoding="utf-8")
+            assert provider_model_ids("custom:test-provider") == ["proxy-model"]
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 def test_profiles_without_model_listing_never_hit_the_network():
     """SDK-backed profiles (bedrock, vertex) still carry a base_url the generic fetch_models
     would happily GET ``/models`` against; the flag must short-circuit first."""
-    from providers import list_providers
-
-    flagged = [p for p in list_providers() if not p.supports_model_listing]
-    assert {p.name for p in flagged} >= {"bedrock", "vertex"}
+    profile = ProviderProfile(name="custom", supports_model_listing=False,
+                              base_url="https://example.test/v1")
     with patch("hermes_cli.urllib_security.open_credentialed_url") as opener:
-        for profile in flagged:
-            assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None, profile.name
+        assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None
     opener.assert_not_called()

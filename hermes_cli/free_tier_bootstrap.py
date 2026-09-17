@@ -92,8 +92,11 @@ def _inventory_other_providers() -> bool:
     ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard counts
     keyless catalog providers as "configured" and is True on a blank machine."""
     from hermes_cli.auth import resolve_provider
+    from hermes_cli.provider_policy import UnsupportedProviderError
     try:
         return resolve_provider("auto", skip_free_tier=True) != "nous"
+    except UnsupportedProviderError:
+        raise
     except Exception as exc:
         logger.debug("free tier bootstrap: nothing else carries inference (%s)", exc)
         return False
@@ -107,10 +110,20 @@ def _resolve_inference() -> str:
         return ""
 
 
-def _build_record(*, other: bool, force: bool) -> SetupRecord:
+def _build_record(*, force: bool) -> SetupRecord:
     """One inventory-then-mint pass into a record. ``force`` is the user's own retry: it makes one
     attempt even inside the mint memo's cooldown (``anon_auth.ensure_portal_identity``)."""
     from hermes_cli import anon_auth
+    from hermes_cli.provider_policy import UnsupportedProviderError
+    from hermes_cli.runtime_provider import validate_provider_pins
+
+    try:
+        validate_provider_pins()
+        other = _inventory_other_providers()
+    except UnsupportedProviderError as exc:
+        # A policy refusal is not missing credentials, and must never mint another account.
+        return SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                           has_identity=False, other_providers=False, error=str(exc))
 
     error = ""
     failure: Dict[str, Any] = {}
@@ -156,7 +169,7 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
                 return _record
         _started = True
 
-    record = _build_record(other=_inventory_other_providers(), force=False)
+    record = _build_record(force=False)
     with _lock:
         _record = record
         _done.set()
@@ -187,7 +200,7 @@ def retry_bootstrap_mint(*, force: bool = False, announce: bool = True) -> Setup
         return current
     # Re-inventory: a provider the user connected during the cooldown must keep inference; the
     # boot-time answer is stale by now.
-    record = _build_record(other=_inventory_other_providers(), force=force)
+    record = _build_record(force=force)
     with _lock:
         # Two retries can race (the background loop and the user's click): a build that found no
         # identity must not overwrite one that did.

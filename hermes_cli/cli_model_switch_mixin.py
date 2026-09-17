@@ -795,37 +795,6 @@ class CLIModelSwitchMixin:
         _commit_model_switch(self, result, persist_global=persist_global, one_turn=one_turn,
                              reasoning_effort=reasoning_effort)
 
-    def _handle_codex_runtime(self, cmd_original: str) -> None:
-        """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
-
-        Usage:
-            /codex-runtime                       — show current state
-            /codex-runtime auto                  — Hermes default (chat_completions)
-            /codex-runtime codex_app_server      — hand turns to codex subprocess
-            /codex-runtime on / off              — synonyms for the above
-        """
-        from cli import _cprint
-        from hermes_cli import codex_runtime_switch as crs
-
-        parts = cmd_original.split(None, 1)
-        new_value, errors = crs.parse_args(parts[1].strip() if len(parts) > 1 else "")
-        if errors:
-            for err in errors:
-                _cprint(f"❌ {err}")
-            return
-        try:
-            from hermes_cli.config import load_config, save_config
-        except Exception as exc:
-            _cprint(f"❌ could not load config: {exc}")
-            return
-        result = crs.apply(
-            load_config(), new_value,
-            persist_callback=(save_config if new_value is not None else None))
-        prefix = "✓" if result.success else "✗"
-        for line in result.message.splitlines():
-            _cprint(f"  {prefix} {line}" if line.startswith("openai_runtime") else f"    {line}")
-        if result.success and result.requires_new_session:
-            _cprint("    Tip: `/reset` starts a new session immediately.")
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
@@ -838,30 +807,3 @@ class CLIModelSwitchMixin:
             return bool(cmd and cmd.name == "model")
         except Exception:
             return False
-
-    def _cmd_moa(self, cmd_original: str):
-        """/moa one-shot: run one prompt through the default MoA preset, then restore the prior
-        model (a session-long MoA switch goes through the picker's virtual MoA provider)."""
-        from cli import _cprint, _slash_args
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-
-        payload = _slash_args(cmd_original)
-        if not payload:
-            _cprint(f"  {moa_usage()}")
-            return True
-        moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
-        preset = normalize_moa_config(moa_cfg)["default_preset"]
-        self._pending_moa_restore_model = {
-            key: getattr(self, key, None)
-            for key in (
-                "requested_provider", "provider", "model", "api_key", "base_url", "api_mode")}
-        self.requested_provider = "moa"
-        self.provider = "moa"
-        self.model = preset
-        self.api_key = "moa-virtual-provider"
-        self.base_url = "moa://local"
-        self.api_mode = "chat_completions"
-        self.agent = None
-        self._pending_moa_disable_after_turn = True
-        self._pending_agent_seed = payload
-        _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")

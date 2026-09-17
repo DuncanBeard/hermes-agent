@@ -49,7 +49,6 @@ def _restore_real_discovery():
     providers._discover_providers()
 
 
-
 class _FakeEP:
     def __init__(self, name, loader):
         self.name = name
@@ -103,7 +102,7 @@ def _register_via_module():
     return object()  # non-callable → discovery must NOT try to call it
 
 
-def test_entry_point_callable_and_module_targets(monkeypatch):
+def test_entry_point_callable_and_module_targets_reject_unsupported_accounts(monkeypatch):
     fake_eps = _FakeEntryPoints(
         [
             _FakeEP("ep-callable", _register_via_callable),
@@ -116,9 +115,9 @@ def test_entry_point_callable_and_module_targets(monkeypatch):
     _enable(monkeypatch, "ep-callable", "ep-module")
     _clear_provider_caches()
     try:
-        assert providers.get_provider_profile("ep-callable") is not None
-        assert providers.get_provider_profile("epc") is not None  # alias
-        assert providers.get_provider_profile("ep-module") is not None
+        assert providers.get_provider_profile("ep-callable") is None
+        assert providers.get_provider_profile("epc") is None  # alias
+        assert providers.get_provider_profile("ep-module") is None
     finally:
         _clear_provider_caches()
 
@@ -133,6 +132,7 @@ def test_entry_point_not_enabled_is_skipped(monkeypatch):
     _clear_provider_caches()
     try:
         assert providers.get_provider_profile("ep-callable") is None
+        assert providers.get_provider_profile("nous") is not None
     finally:
         _clear_provider_caches()
 
@@ -147,6 +147,7 @@ def test_entry_point_disabled_wins_over_enabled(monkeypatch):
     _clear_provider_caches()
     try:
         assert providers.get_provider_profile("ep-callable") is None
+        assert providers.get_provider_profile("nous") is not None
     finally:
         _clear_provider_caches()
 
@@ -190,13 +191,14 @@ def test_entry_point_failure_is_isolated(monkeypatch):
     _enable(monkeypatch, "broken", "ep-callable")
     _clear_provider_caches()
     try:
-        # A broken entry point must not prevent the good one from registering.
-        assert providers.get_provider_profile("ep-callable") is not None
+        # Broken and unsupported entry points must not prevent bundled discovery.
+        assert providers.get_provider_profile("ep-callable") is None
+        assert providers.get_provider_profile("nous") is not None
     finally:
         _clear_provider_caches()
 
 
-def test_filesystem_plugins_win_over_entry_points(monkeypatch):
+def test_retired_entry_point_cannot_restore_removed_account(monkeypatch):
     """Entry points are discovered FIRST (lowest precedence): last-writer-wins
     in register_provider() means a bundled/user profile of the same name
     overrides a pip impostor."""
@@ -218,8 +220,7 @@ def test_filesystem_plugins_win_over_entry_points(monkeypatch):
     _clear_provider_caches()
     try:
         p = providers.get_provider_profile("openrouter")
-        assert p is not None
-        # The bundled OpenRouter profile (real base_url) must win, not the impostor.
-        assert "impostor.test" not in (p.base_url or "")
+        assert p is None
+        assert providers.get_provider_profile("copilot") is not None
     finally:
         _clear_provider_caches()

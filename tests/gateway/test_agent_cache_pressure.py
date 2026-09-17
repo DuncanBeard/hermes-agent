@@ -147,8 +147,8 @@ class TestPersistenceGuard:
         agent = AIAgent(
             model="anthropic/claude-sonnet-4",
             api_key="test",
-            base_url="https://openrouter.ai/api/v1",
-            provider="openrouter",
+            base_url="https://example.invalid/v1",
+            provider="custom",
             max_iterations=5,
             quiet_mode=True,
             skip_context_files=True,

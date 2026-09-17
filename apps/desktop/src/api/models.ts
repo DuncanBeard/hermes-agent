@@ -3,7 +3,6 @@ import type { ModelOptionsResult } from '@hermes/shared'
 import type {
   AnalyticsResponse,
   AuxiliaryModelsResponse,
-  MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse
@@ -98,24 +97,6 @@ export function getAuxiliaryModels(profile?: null | string): Promise<AuxiliaryMo
   })
 }
 
-export function getMoaModels(profile?: null | string): Promise<MoaConfigResponse> {
-  return hermesApi<MoaConfigResponse>({
-    ...profileScoped(profile),
-    path: '/api/model/moa'
-  })
-}
-
-export function saveMoaModels(
-  body: MoaConfigResponse,
-  profile?: null | string
-): Promise<MoaConfigResponse & { ok: boolean }> {
-  return hermesApi<MoaConfigResponse & { ok: boolean }>({
-    ...profileScoped(profile),
-    path: '/api/model/moa',
-    method: 'PUT',
-    body
-  })
-}
 
 export function setModelAssignment(
   body: ModelAssignmentRequest,

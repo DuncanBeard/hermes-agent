@@ -371,6 +371,9 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     if agent is None or session.get("model_override"):
         return
     target = _config_model_target()
+    if target[1] and target[1] != "auto":
+        from hermes_cli.auth import resolve_provider
+        resolve_provider(target[1])
     if not target[0]:
         return
     seen = session.get("config_model_seen")

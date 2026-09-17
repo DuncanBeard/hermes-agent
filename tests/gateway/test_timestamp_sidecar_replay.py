@@ -75,7 +75,7 @@ def responses_agent(tmp_path, monkeypatch):
 
     def make_agent():
         agent = AIAgent(
-            api_key="test-key", base_url="http://127.0.0.1:1/v1", provider="openai-compat",
+            api_key="test-key", base_url="http://127.0.0.1:1/v1", provider="custom",
             model="test-model", api_mode="codex_responses", max_iterations=4,
             enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
             skip_memory=True, save_trajectories=False, session_db=db, session_id=sid,

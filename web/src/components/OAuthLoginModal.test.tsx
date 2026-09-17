@@ -75,6 +75,7 @@ async function exhaustCountdown(seconds: number) {
 beforeEach(() => {
   (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
+  vi.spyOn(window, "open").mockImplementation(() => null);
   apiMocks.startOAuthLogin.mockReset();
   apiMocks.pollOAuthSession.mockReset();
   apiMocks.cancelOAuthSession.mockReset().mockResolvedValue({ ok: true });
@@ -85,14 +86,59 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  vi.runOnlyPendingTimers();
+afterEach(async () => {
+  await act(async () => root?.unmount());
+  vi.clearAllTimers();
   vi.useRealTimers();
-  root?.unmount();
+  vi.restoreAllMocks();
   container?.remove();
 });
 
 describe("OAuthLoginModal local expiry", () => {
+  it.each([
+    { ...provider, id: "nous", name: "Nous Portal" },
+    { ...provider, id: "copilot", name: "GitHub Copilot" },
+  ])("completes device-code login for $id", async (selectedProvider) => {
+    const onSuccess = vi.fn();
+    const onClose = vi.fn();
+    const start = deviceStart(60);
+    apiMocks.startOAuthLogin.mockResolvedValue(start);
+    await render(
+      <OAuthLoginModal provider={selectedProvider} onClose={onClose} onSuccess={onSuccess} onError={() => {}} />,
+    );
+    expect(apiMocks.startOAuthLogin).toHaveBeenCalledWith(selectedProvider.id);
+    expect(window.open).toHaveBeenCalledWith(start.verification_url, "_blank", "noopener,noreferrer");
+    expect(container.textContent).toContain(start.user_code);
+    apiMocks.pollOAuthSession.mockResolvedValue({ status: "approved", session_id: start.session_id });
+    await act(async () => { vi.advanceTimersByTime(2000); });
+    expect(apiMocks.pollOAuthSession).toHaveBeenCalledWith(selectedProvider.id, start.session_id);
+    expect(onSuccess).toHaveBeenCalledWith(`${selectedProvider.name} connected`);
+    await act(async () => { vi.advanceTimersByTime(1500); });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(apiMocks.cancelOAuthSession).not.toHaveBeenCalled();
+  });
+  it.each(["pkce", "external"])("rejects unsupported %s flows on start and retry", async (flow) => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    apiMocks.startOAuthLogin.mockResolvedValue({
+      flow,
+      session_id: "obsolete-session",
+      auth_url: "https://portal.example/auth",
+      expires_in: 60,
+    });
+    await render(
+      <OAuthLoginModal provider={provider} onClose={() => {}} onSuccess={() => {}} onError={() => {}} />,
+    );
+    expect(container.textContent).toContain("Unsupported login flow");
+    expect(container.textContent).toContain("device-code");
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Retry"));
+    await act(async () => retry!.click());
+    expect(apiMocks.startOAuthLogin).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Unsupported login flow");
+    expect(container.querySelector("input, form")).toBeNull();
+    expect(container.textContent).not.toContain("Submit code");
+    expect(open).not.toHaveBeenCalled();
+    expect(apiMocks.pollOAuthSession).not.toHaveBeenCalled();
+  });
   it("surfaces the backend error_message when the session lapsed", async () => {
     apiMocks.startOAuthLogin.mockResolvedValue(deviceStart(3));
     await render(
@@ -141,13 +187,9 @@ describe("OAuthLoginModal local expiry", () => {
     expect(apiMocks.pollOAuthSession.mock.calls.length).toBeGreaterThan(0);
   });
 
-  it("falls back to guidance naming the stalled-tab cause (pkce flow, no poll)", async () => {
-    apiMocks.startOAuthLogin.mockResolvedValue({
-      auth_url: "https://portal.example/auth",
-      expires_in: 3,
-      flow: "pkce",
-      session_id: "sess-1",
-    });
+  it("falls back to stalled-tab guidance when the device expiry poll fails", async () => {
+    apiMocks.startOAuthLogin.mockResolvedValue(deviceStart(1));
+    apiMocks.pollOAuthSession.mockRejectedValue(new Error("offline"));
     await render(
       <OAuthLoginModal
         provider={provider}
@@ -161,8 +203,7 @@ describe("OAuthLoginModal local expiry", () => {
     await act(async () => {});
 
     expect(container.textContent).toContain("stalled in the opened tab");
-    // PKCE has no poll endpoint call at expiry.
-    expect(apiMocks.pollOAuthSession).not.toHaveBeenCalled();
+    expect(apiMocks.pollOAuthSession).toHaveBeenCalledWith(provider.id, "sess-1");
   });
 
   it("a Retry after expiry starts fresh instead of insta-lapsing", async () => {

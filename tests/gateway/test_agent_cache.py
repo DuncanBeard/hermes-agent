@@ -33,8 +33,8 @@ class TestAgentConfigSignature:
     def test_model_change_different_signature(self):
         from gateway.run import GatewayRunner
 
-        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1",
-                    "provider": "openrouter"}
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://example.invalid/v1",
+                    "provider": "custom"}
         sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
         sig2 = GatewayRunner._agent_config_signature("claude-opus-4.6", runtime, ["hermes-telegram"], "")
         assert sig1 != sig2
@@ -45,14 +45,14 @@ class TestAgentConfigSignature:
 
         rt1 = {
             "api_key": "eyJhbGci.token-for-account-a",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "provider": "openai-codex",
+            "base_url": "https://example.invalid/v1",
+            "provider": "custom",
             "api_mode": "codex_responses",
         }
         rt2 = {
             "api_key": "eyJhbGci.token-for-account-b",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "provider": "openai-codex",
+            "base_url": "https://example.invalid/v1",
+            "provider": "custom",
             "api_mode": "codex_responses",
         }
 
@@ -64,8 +64,8 @@ class TestAgentConfigSignature:
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner
 
-        rt1 = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
-        rt2 = {"api_key": "sk-test12345678", "base_url": "https://api.anthropic.com", "provider": "anthropic"}
+        rt1 = {"api_key": "sk-test12345678", "base_url": "https://example.invalid/v1", "provider": "custom"}
+        rt2 = {"api_key": "sk-test12345678", "base_url": "https://api.githubcopilot.com", "provider": "copilot"}
         sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt1, ["hermes-telegram"], "")
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
@@ -302,14 +302,14 @@ class TestAgentCacheLifecycle:
 
         runner = _make_runner()
         session_key = "telegram:12345"
-        runtime = {"api_key": "test", "base_url": "https://openrouter.ai/api/v1",
-                    "provider": "openrouter", "api_mode": "chat_completions"}
+        runtime = {"api_key": "test", "base_url": "https://example.invalid/v1",
+                    "provider": "custom", "api_mode": "chat_completions"}
         sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["hermes-telegram"], "")
 
         # First message — create and cache
         agent1 = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
             skip_memory=True, platform="telegram",
         )
@@ -333,7 +333,7 @@ class TestAgentCacheLifecycle:
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True, skip_context_files=True,
             skip_memory=True,
         )
@@ -523,7 +523,7 @@ class TestAgentCacheSpilloverLive:
         from run_agent import AIAgent
         return AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             platform="telegram",
@@ -594,7 +594,7 @@ class TestAgentCacheIdleResume:
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             session_id="idle-resume-test-2",
@@ -640,14 +640,14 @@ class TestAgentCacheIdleResume:
         # Agent B: session expired (hard) — terminal torn down.
         agent_a = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             session_id="soft-session",
         )
         agent_b = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
-            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            base_url="https://example.invalid/v1", provider="custom",
             max_iterations=5, quiet_mode=True,
             skip_context_files=True, skip_memory=True,
             session_id="hard-session",

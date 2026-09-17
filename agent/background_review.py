@@ -212,7 +212,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     parent = {
         "provider": agent.provider, "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
-        "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
+        "api_mode": parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),

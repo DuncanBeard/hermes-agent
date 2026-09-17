@@ -72,26 +72,17 @@ def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool
 
 
 def provider_has_credentials(provider: str) -> bool:
-    """Whether *provider* can be switched to without the user typing a key: env/.env key, auth
-    store login, or a usable credential-pool entry. ``custom``/``custom:*`` targets only come out
-    of the ladder when the user declared them in config, so they count as authenticated."""
-    from hermes_cli.auth import get_auth_status, has_usable_secret
-    from hermes_cli.config import get_env_value_prefer_dotenv
-
-    pid = (provider or "").strip().lower()
-    if not pid:
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.provider_policy import is_supported_provider_id
+    if not is_supported_provider_id(provider):
         return False
-    if pid == "custom" or pid.startswith("custom:"):
+    if provider == "custom" or provider.startswith("custom:"):
         return True
     try:
-        if pid == "openrouter" and has_usable_secret(get_env_value_prefer_dotenv("OPENROUTER_API_KEY")):
-            return True
-        status = get_auth_status(pid) or {}
-        if status.get("logged_in") or status.get("configured"):
+        if get_auth_status(provider).get("logged_in"):
             return True
         from agent.credential_pool import load_pool
-
-        pool = load_pool(pid)
+        pool = load_pool(provider)
         return bool(pool.has_credentials() and pool.has_available())
     except Exception:
         return False

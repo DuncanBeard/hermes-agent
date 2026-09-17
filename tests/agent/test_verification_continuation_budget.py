@@ -29,7 +29,7 @@ def agent(tmp_path, monkeypatch):
             session_id="verify-budget-test",
             api_key="test-key",
             base_url="https://example.invalid/v1",
-            provider="openai-compat",
+            provider="custom",
             model="test/model",
             max_iterations=1,
             quiet_mode=True,

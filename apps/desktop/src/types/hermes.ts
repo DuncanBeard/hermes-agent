@@ -1443,42 +1443,6 @@ export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[]
 }
 
-export interface MoaModelSlot {
-  provider: string
-  model: string
-  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
-  reasoning_effort?: string
-  enabled?: boolean
-}
-
-export interface MoaConfigResponse {
-  default_preset: string
-  active_preset: string
-  presets: Record<
-    string,
-    {
-      aggregator: MoaModelSlot
-      aggregator_temperature: number
-      degraded_reference_policy: 'loud' | 'silent'
-      enabled: boolean
-
-      reference_models: MoaModelSlot[]
-      reference_temperature: number
-
-      /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
-      fanout?: string
-      reference_timeout: number | null
-    }
-  >
-  aggregator: MoaModelSlot
-  aggregator_temperature: number
-  degraded_reference_policy: 'loud' | 'silent'
-  enabled: boolean
-
-  reference_models: MoaModelSlot[]
-  reference_temperature: number
-  reference_timeout: number | null
-}
 
 export interface ModelAssignmentRequest {
   /** Optional API key for a custom/local endpoint. Persisted to model.api_key

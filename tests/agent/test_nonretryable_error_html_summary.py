@@ -62,7 +62,7 @@ def _make_agent() -> AIAgent:
         a = AIAgent(
             api_key="test-key-1234567890",
             base_url="https://api.openai.com/v1",
-            provider="openai",
+            provider="custom",
             api_mode="chat_completions",
             model="gpt-5.5",
             quiet_mode=True,

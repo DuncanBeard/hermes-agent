@@ -9,7 +9,7 @@ os.environ["HERMES_STREAM_RETRIES"] = "0"
 try:
     from run_agent import AIAgent
     import tools.delegate_tool as dt
-    parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="test-provider",
+    parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="custom",
                      model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     # find the child-construction function by name
     fn = [getattr(dt, n) for n in dir(dt) if n.startswith("_") and "child" in n.lower() and callable(getattr(dt, n)) and "spawn" in (getattr(dt, n).__doc__ or "").lower() + n.lower()]

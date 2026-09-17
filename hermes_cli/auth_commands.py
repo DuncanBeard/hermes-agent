@@ -24,10 +24,10 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+_OAUTH_CAPABLE_PROVIDERS = {"nous"}
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
-_OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
+_OAUTH_DEFAULT_PROVIDERS = {"nous"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -74,9 +74,7 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     return None
 
 
-_PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
+_PROVIDER_ALIASES = {"github": "copilot", "github-copilot": "copilot", "nous-portal": "nous"}
 
 
 def _normalize_provider(provider: str) -> str:
@@ -127,8 +125,8 @@ def _provider_base_url(provider: str) -> str:
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
-    return (provider in PROVIDER_REGISTRY or provider == "openrouter"
-            or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+    from hermes_cli.provider_policy import is_supported_provider_id
+    return is_supported_provider_id(provider) or configured_provider is not None
 
 
 def _unknown_provider_exit(provider: str) -> SystemExit:
@@ -193,20 +191,8 @@ def _format_exhausted_status(entry) -> str:
     return f"{head} ({wait} left)"
 
 
-def _anthropic_oauth_login(args) -> dict:
-    from agent import anthropic_credentials as anthropic_mod
-    creds = anthropic_mod.run_hermes_oauth_login_pure()
-    if not creds:
-        raise SystemExit("Anthropic OAuth login did not return credentials.")
-    return creds
 
 
-def _qwen_oauth_login(args) -> dict:
-    from hermes_cli.auth_qwen import _mark_qwen_oauth_active
-
-    creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
-    _mark_qwen_oauth_active(creds)
-    return creds
 
 
 @dataclass(frozen=True)
@@ -223,57 +209,7 @@ class _OAuthAddSpec:
     auth_type: str = AUTH_TYPE_OAUTH
 
 
-_OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
-    "anthropic": _OAuthAddSpec(
-        login=_anthropic_oauth_login,
-        token=lambda creds: creds["access_token"],
-        source=f"{SOURCE_MANUAL}:hermes_pkce",
-        fields=lambda creds, provider: {
-            "refresh_token": creds.get("refresh_token"),
-            "expires_at_ms": creds.get("expires_at_ms"),
-            "base_url": _provider_base_url(provider)}),
-    "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
-        token=lambda creds: creds["tokens"]["access_token"],
-        source=SOURCE_MANUAL_DEVICE_CODE,
-        fields=lambda creds, provider: {
-            "refresh_token": creds["tokens"].get("refresh_token"),
-            "base_url": creds.get("base_url"),
-            "last_refresh": creds.get("last_refresh")},
-        activate_first=True),
-    "xai-oauth": _OAuthAddSpec(
-        login=lambda args: auth_mod._xai_oauth_device_code_login(
-            timeout_seconds=getattr(args, "timeout", None) or 20.0,
-            open_browser=not getattr(args, "no_browser", False)),
-        token=lambda creds: creds["tokens"]["access_token"],
-        source=SOURCE_MANUAL_DEVICE_CODE,
-        fields=lambda creds, provider: {
-            "refresh_token": creds["tokens"].get("refresh_token"),
-            "base_url": creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
-            "last_refresh": creds.get("last_refresh")},
-        activate_first=True),
-    "qwen-oauth": _OAuthAddSpec(
-        login=_qwen_oauth_login,
-        token=lambda creds: creds["api_key"],
-        source=f"{SOURCE_MANUAL}:qwen_cli",
-        fields=lambda creds, provider: {"base_url": creds.get("base_url")}),
-    "minimax-oauth": _OAuthAddSpec(
-        login=lambda args: auth_mod._minimax_oauth_login(
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=getattr(args, "timeout", None) or 15.0),
-        token=lambda creds: creds["access_token"],
-        source=f"{SOURCE_MANUAL}:minimax_oauth",
-        fields=lambda creds, provider: {
-            "refresh_token": creds.get("refresh_token"), "base_url": creds.get("inference_base_url")}),
-    "openrouter": _OAuthAddSpec(
-        login=lambda args: auth_mod._openrouter_pkce_login(
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=float(getattr(args, "timeout", None) or 300.0)),
-        token=lambda creds: creds["api_key"],
-        source=f"{SOURCE_MANUAL}:openrouter_pkce",
-        fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
-        auth_type=AUTH_TYPE_API_KEY),
-}
+_OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {}
 
 
 def _ask(prompt: str, reader: Callable[[str], str] | None = None) -> str | None:
@@ -357,7 +293,9 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 
 
 def auth_add_command(args) -> None:
-    provider = _normalize_provider(getattr(args, "provider", ""))
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.provider_policy import require_supported_provider
+    provider = require_supported_provider(resolve_provider(getattr(args, "provider", "")))
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise _unknown_provider_exit(provider)
@@ -640,69 +578,11 @@ def auth_spotify_command(args) -> None:
     handler(SimpleNamespace(provider="spotify"))
 
 
-def _print_bedrock_status() -> None:
-    """Show AWS Bedrock credential status (not in the pool — uses boto3 chain)."""
-    try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
-        if not has_aws_credentials():
-            return
-        region = resolve_bedrock_region()
-        print("bedrock (AWS SDK credential chain):")
-        print(f"  Auth: {resolve_aws_auth_env_var() or 'unknown'}")
-        print(f"  Region: {region}")
-        try:
-            import boto3
-            arn = boto3.client("sts", region_name=region).get_caller_identity().get("Arn", "unknown")
-            print(f"  Identity: {arn}")
-        except Exception:
-            print("  Identity: (could not resolve — boto3 STS call failed)")
-        print()
-    except ImportError:
-        pass  # boto3 or bedrock_adapter not available
-
-
-def _print_azure_entra_status() -> None:
-    """Show Azure Foundry Entra ID status when model.provider is azure-foundry with entra_id auth."""
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
-        if not isinstance(model_cfg, dict) or (
-            str(model_cfg.get("provider") or "").strip().lower() != "azure-foundry"
-            or str(model_cfg.get("auth_mode") or "").strip().lower() != "entra_id"):
-            return
-        from agent.azure_identity_adapter import (
-            EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, describe_active_credential, has_azure_identity_installed,
-        )
-        base_url = str(model_cfg.get("base_url") or "").strip()
-        entra = model_cfg.get("entra") or {}
-        scope = (str(entra.get("scope") or "").strip() if isinstance(entra, dict) else "") or SCOPE_AI_AZURE_DEFAULT
-        print("azure-foundry (Microsoft Entra ID):")
-        print(f"  Endpoint: {base_url or '(not configured)'}")
-        print(f"  Scope: {scope}")
-        if not has_azure_identity_installed():
-            print("  Status: ⚠ azure-identity not installed (pip install azure-identity)")
-        else:
-            info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
-            env_sources = info.get("env_sources") or []
-            if info.get("ok"):
-                print(f"  Status: ✓ token acquired ({', '.join(env_sources) if env_sources else 'default chain'})")
-            else:
-                print(f"  Status: ⚠ {info.get('error') or 'credential chain exhausted'}")
-                if info.get("hint"):
-                    print(f"  Hint: {info['hint']}")
-        print()
-    except Exception:
-        pass
-
-
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     print("Credential Pool Status")
     print("=" * 50)
     auth_list_command(SimpleNamespace(provider=None))
-    _print_bedrock_status()
-    _print_azure_entra_status()
     print()
 
     choices = [
@@ -720,7 +600,7 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    known = sorted(PROVIDER_REGISTRY)
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:

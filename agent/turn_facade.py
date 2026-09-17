@@ -207,5 +207,3 @@ class TurnFacadeMixin:
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""
         return self.run_conversation(message, stream_callback=stream_callback)["final_response"]
-
-    _run_codex_app_server_turn = _forward("agent.codex_runtime", "run_codex_app_server_turn")

@@ -104,6 +104,16 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('renders the backend accounts without obsolete hardcoded key-provider rows', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [provider('nous', false), provider('copilot', false, { name: 'GitHub Copilot' })]
+    })
+    await renderProvidersSettings()
+    expect(screen.getByText('GitHub Copilot')).toBeTruthy()
+    expect(screen.queryByText('Fireworks AI')).toBeNull()
+    expect(screen.queryByText('OpenRouter')).toBeNull()
+  })
+
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
     const { $settingsScopeOverride } = await import('@/store/settings-scope')
     const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
@@ -206,24 +216,13 @@ describe('ProvidersSettings', () => {
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
-  it('does not offer removal for externally managed providers', async () => {
+  it('respects backend credential ownership for direct Copilot', async () => {
     listOAuthProviders.mockResolvedValue({
-      providers: [
-        provider('qwen-oauth', true, {
-          cli_command: 'hermes auth add qwen-oauth',
-          disconnect_hint: "Use `hermes auth add qwen-oauth` or that provider's CLI to remove it.",
-          disconnectable: false,
-          flow: 'external',
-          name: 'Qwen (via Qwen CLI)'
-        })
-      ]
+      providers: [provider('copilot', true, { name: 'GitHub Copilot', disconnectable: false })]
     })
-
     await renderProvidersSettings()
-
-    expect(await screen.findByText('Qwen Code')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
+    expect(await screen.findByText('GitHub Copilot')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Remove GitHub Copilot' })).toBeNull()
   })
 
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {

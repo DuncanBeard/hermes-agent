@@ -1,4 +1,4 @@
-"""Model assignment dashboard routes: model info/options/recommended default, auxiliary + MoA slots, /api/model/set.
+"""Model assignment dashboard routes: model info/options/recommended default, auxiliary slots, /api/model/set.
 
 Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are resolved late at call time (cycle-safe).
@@ -17,7 +17,7 @@ from hermes_cli.web_server_config import (
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_cli.web_models import ModelAssignment
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -146,7 +146,11 @@ def get_recommended_default_model(provider: str = ""):
     the model a user lands on without explicitly picking it.
     Response: {"provider", "model", "free_tier": bool | None} — free_tier only for
     Nous; ``model`` may be empty (caller degrades gracefully)."""
-    slug = (provider or "").strip().lower()
+    from hermes_cli.auth import resolve_provider
+    try:
+        slug = resolve_provider(provider)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
 
     if slug == "nous":
         try:
@@ -198,77 +202,6 @@ def get_auxiliary_models(profile: Optional[str] = None):
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
 
 
-@router.get("/api/model/moa")
-def get_moa_models(profile: Optional[str] = None):
-    """Return the configured Mixture-of-Agents provider/model slots."""
-    with http_failure("GET /api/model/moa failed", 500, detail="Failed to read MoA config"):
-        from hermes_cli.moa_config import normalize_moa_config
-
-        with _profile_scope(profile):
-            cfg = load_config()
-            return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-
-
-_MOA_PRESET_FIELDS = (
-    "reference_temperature", "aggregator_temperature", "reference_timeout",
-    "degraded_reference_policy", "fanout", "enabled",
-)
-
-
-def _slot_dict(slot: MoaModelSlot) -> dict:
-    # Drop unset optionals so saved slots stay minimal ({provider, model}).
-    return {k: v for k, v in slot.dict().items() if v is not None}
-
-
-def _preset_dict(preset) -> dict:
-    """Raw preset dict from a MoaPresetPayload or the flat MoaConfigPayload fields."""
-    return {
-        "reference_models": [_slot_dict(slot) for slot in preset.reference_models],
-        "aggregator": _slot_dict(preset.aggregator),
-        **{name: getattr(preset, name) for name in _MOA_PRESET_FIELDS},
-    }
-
-
-@router.put("/api/model/moa")
-def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
-    """Persist the Mixture-of-Agents provider/model slots."""
-    with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
-        from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
-
-        # load→mutate→save runs on a worker thread (sync-def endpoint); the
-        # desktop's debounced PUT /api/config autosave races it, so the whole
-        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
-        with config_write_scope(body.profile or profile):
-            cfg = load_config()
-            if body.presets:
-                raw = {
-                    "default_preset": body.default_preset,
-                    "active_preset": body.active_preset,
-                    "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
-                }
-            else:
-                raw = _preset_dict(body)  # legacy flat payload from older clients
-
-            # Reject-don't-repair: normalize_moa_config() silently swaps any preset with
-            # incomplete slots for the hardcoded defaults — correct tolerance at READ time,
-            # silent data loss at WRITE time (desktop autosave of a half-filled slot replaced
-            # the user's whole preset). Refuse loudly so no client can corrupt config here.
-            # See #64156.
-            problems = validate_moa_payload(raw)
-            if problems:
-                raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
-            normalized = normalize_moa_config(raw)
-            # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
-            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
-            # every other section too, so a Desktop MoA autosave could wipe a chain another
-            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
-            moa_section = dict(cfg.get("moa") or {})
-            moa_section.update(normalized)
-            save_config({"moa": moa_section}, merge_existing=True)
-            return {"ok": True, **normalized}
-
-
 @router.post("/api/model/set")
 async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = None):
     """Assign a model to the main slot or an auxiliary task slot. Writes
@@ -280,6 +213,21 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
 
     if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
+
+    # Resolve explicit identities in the selected profile before pricing/auth/network work.
+    if not (scope == "auxiliary" and (task == "__reset__" or provider == "auto")):
+        def _resolve_assignment_provider():
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+            with _config_profile_scope(body.profile or profile):
+                resolved = resolve_provider(provider, explicit_base_url=base_url, explicit_api_key=api_key)
+                if resolved.startswith("custom:") and not _get_named_custom_provider(resolved):
+                    raise ValueError(f"Custom endpoint {resolved!r} is not configured")
+                return resolved
+        try:
+            provider = await asyncio.to_thread(_resolve_assignment_provider)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope

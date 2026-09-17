@@ -108,57 +108,6 @@ class ModelAssignment(BaseModel):
     confirm_expensive_model: bool = False
     profile: Optional[str] = None
 
-class MoaModelSlot(BaseModel):
-    provider: str = ""
-    model: str = ""
-    # Declared so a GET round-trip doesn't strip and wipe it.
-    reasoning_effort: Optional[str] = None
-    enabled: bool = True
-
-class _MoaReferenceControls(BaseModel):
-    # None = no per-preset override; inherits auxiliary.moa_reference.timeout (900s default).
-    reference_timeout: Optional[float] = None
-    degraded_reference_policy: Literal["loud", "silent"] = "loud"
-
-    @field_validator("reference_timeout", mode="before")
-    @classmethod
-    def _validate_reference_timeout(cls, value: Any) -> Optional[float]:
-        """Reject JSON booleans/non-finite values before float coercion."""
-        if value is None or value == "":
-            return None
-        try:
-            timeout = float(value) if not isinstance(value, bool) else math.nan
-        except (TypeError, ValueError) as exc:
-            raise ValueError("reference_timeout must be a finite positive number") from exc
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("reference_timeout must be a finite positive number")
-        return timeout
-
-class MoaPresetPayload(_MoaReferenceControls):
-    reference_models: list[MoaModelSlot] = []
-    aggregator: MoaModelSlot = MoaModelSlot()
-    # None = temperature omitted from API calls (provider default), as for single-model agents.
-    reference_temperature: Optional[float] = None
-    aggregator_temperature: Optional[float] = None
-    # Newer per-preset knobs (moa_config._normalize_preset): optional for older clients,
-    # declared so GET round-trips don't erase them.
-    fanout: Optional[str] = None
-    enabled: bool = True
-
-class MoaConfigPayload(_MoaReferenceControls):
-    default_preset: str = "default"
-    active_preset: str = ""
-    presets: dict[str, MoaPresetPayload] = {}
-    # Backward-compatible flat payload fields for older dashboard/desktop clients.
-    reference_models: list[MoaModelSlot] = []
-    aggregator: MoaModelSlot = MoaModelSlot()
-    reference_temperature: Optional[float] = None
-    aggregator_temperature: Optional[float] = None
-
-    fanout: Optional[str] = None
-    enabled: bool = True
-    profile: Optional[str] = None
-
 class FsWriteText(BaseModel):
     path: str
     content: str
@@ -231,10 +180,6 @@ class TTSLeaseRequest(BaseModel):
     (``desktop:read-aloud``, ``desktop:conversation``); ``active`` True acquires + warms, False releases."""
     lease: str
     active: bool = True
-
-class OAuthSubmitBody(BaseModel):
-    session_id: str
-    code: str
 
 class BulkDeleteSessions(BaseModel):
     ids: List[str]

@@ -199,8 +199,7 @@ def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
         mode = decide_image_input_mode(
             _provider, _model, _tui_load_config(),
             requested_provider=getattr(agent, "requested_provider", ""))
-        if getattr(agent, "api_mode", "") == "codex_app_server":
-            mode = "text"
+
     except Exception as _img_exc:
         print(f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
               file=sys.stderr)

@@ -17,8 +17,8 @@ def _make_agent():
     from run_agent import AIAgent
 
     agent = AIAgent(
-        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="deepseek/deepseek-v4-flash",
-        provider="openrouter", quiet_mode=True, skip_context_files=True, skip_memory=True,
+        api_key="test-key", base_url="https://example.invalid/v1", model="deepseek/deepseek-v4-flash",
+        provider="custom", quiet_mode=True, skip_context_files=True, skip_memory=True,
         enabled_toolsets=[], max_iterations=1,
     )
     agent.api_mode = "chat_completions"
@@ -60,13 +60,13 @@ def test_stream_retry_does_not_replay_stale_route_after_switch_model():
     def switch_then_drop(**kwargs):
         sent.append((kwargs["model"], agent.base_url))
         with patch("agent.model_metadata.get_model_context_length", return_value=128000):
-            agent.switch_model("kimi-k2.6", "kimi-coding", api_key="k",
-                               base_url="https://api.moonshot.ai/v1", api_mode="chat_completions")
+            agent.switch_model("kimi-k2.6", "custom", api_key="k",
+                               base_url="https://other.example.invalid/v1", api_mode="chat_completions")
         raise httpx.ReadError("stale stream killed")
 
     with pytest.raises(httpx.ReadError):
         _run(agent, switch_then_drop)
-    assert sent == [("deepseek/deepseek-v4-flash", "https://openrouter.ai/api/v1")]
+    assert sent == [("deepseek/deepseek-v4-flash", "https://example.invalid/v1")]
 
 
 def test_stream_retry_still_reconnects_in_place_when_route_unchanged():

@@ -1143,27 +1143,7 @@ class GatewayTurnMixin:
                 "aux-model-fallback notice",
             )
 
-    async def _hmwa_hygiene_codex_compaction(self, hs, plan, history, session_entry, session_key, _hyg_runtime):
-        """codex app-server runtime: the real context is the server-side thread, not the transcript
-        mirror. The detached-agent path would only rewrite the mirror and its finally-eviction
-        would destroy the live thread (next turn starts blank), so use the cached agent's
-        thread/compact/start and KEEP it cached."""
-        from gateway.run import run_codex_hygiene_compaction
-        # codex app-server runtime: the model's real context is the app-server's server-side thread, not the
-        # transcript mirror. See #73503.
-        _hyg_codex_auto = "native"
-        _hyg_comp_cfg = hs.data.get("compression") if isinstance(hs.data, dict) else None
-        if isinstance(_hyg_comp_cfg, dict):
-            _hyg_codex_auto = str(_hyg_comp_cfg.get("codex_app_server_auto", "native") or "native")
-        _hyg_codex_outcome = await run_codex_hygiene_compaction(
-            self, session_key, session_entry.session_id, auto_mode=_hyg_codex_auto, history=history,
-            approx_tokens=plan.approx_tokens, timeout_seconds=hs.total_ceiling_seconds,
-            failure_cooldown_seconds=hs.failure_cooldown_seconds,
-        )
-        logger.info(
-            "Session hygiene (codex app-server): %s (session=%s, mode=%s, ~%s tokens)",
-            _hyg_codex_outcome, session_entry.session_id, _hyg_codex_auto, f"{plan.approx_tokens:,}",
-        )
+
 
     async def _hmwa_hygiene_build_agent(self, _hyg_model, _hyg_runtime, session_entry):
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
@@ -1284,9 +1264,7 @@ class GatewayTurnMixin:
                 source=source, session_key=session_key,
                 user_config=hs.data if isinstance(hs.data, dict) else None,
             )
-            if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
-                await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
-            elif _hyg_runtime.get("api_key"):
+            if _hyg_runtime.get("api_key"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]

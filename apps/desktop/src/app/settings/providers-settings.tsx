@@ -2,13 +2,10 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { runInTerminal } from '@/app/right-sidebar/store'
 import {
   FEATURED_ID,
   FeaturedProviderRow,
-  FireworksProviderRow,
   LocalModelsProviderRow,
-  OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
   sortProviders
@@ -18,9 +15,8 @@ import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { Check, ChevronRight, KeyRound, Loader2, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
-import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
@@ -35,10 +31,6 @@ import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
-
-// The embedded terminal (and thus the "run disconnect command" path) only
-// exists in the Electron desktop shell, not the web dashboard.
-const canRunInTerminal = () => typeof window !== 'undefined' && Boolean(window.hermesDesktop?.terminal)
 
 // Parallel group headers ("Connected", "Other providers") so the expanded list
 // reads as its own section instead of bleeding into the connected group.
@@ -120,19 +112,10 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
   return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
 }
 
-// Deliberately a near-1:1 replica of the first-run onboarding picker
-// (`Picker` in desktop-onboarding-overlay): same recommended card, same
-// always-visible Local models row, same provider rows, same "Other
-// providers" disclosure (Fireworks and OpenRouter quick-key rows live
-// inside it on both surfaces), and the same bottom-right "I have an API
-// key" affordance. The leaf cards are the exact shared components, so
-// the two surfaces stay visually identical. Selecting a provider hands
-// off to the shared onboarding overlay, which runs that provider's real
-// sign-in flow; the key affordances open the API-key catalog below.
+// Account rows come from the backend provider catalog.
 function OAuthPicker({
   disconnecting,
   onDisconnect,
-  onTerminalDisconnect,
   onWantApiKey,
   onWantLocalModels,
   providers,
@@ -140,7 +123,6 @@ function OAuthPicker({
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
-  onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
@@ -148,7 +130,6 @@ function OAuthPicker({
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
-  const [showAll, setShowAll] = useState(false)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
   if (ordered.length === 0) {
@@ -167,8 +148,7 @@ function OAuthPicker({
   // Both lists preserve `sortProviders` order (curated priority, then name).
   const connected = rest.filter(isConnected)
   const others = rest.filter(p => !isConnected(p))
-  const collapsible = others.length > 0
-  const showOthers = !collapsible || showAll
+  const showOthers = others.length > 0
 
   return (
     <section className="mb-5 grid gap-2">
@@ -200,7 +180,6 @@ function OAuthPicker({
               key={p.id}
               onDisconnect={onDisconnect}
               onSelect={select}
-              onTerminalDisconnect={onTerminalDisconnect}
               provider={p}
             />
           ))}
@@ -212,21 +191,7 @@ function OAuthPicker({
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
-          <FireworksProviderRow onClick={onWantApiKey} />
-          <OpenRouterProviderRow onClick={onWantApiKey} />
         </>
-      )}
-      {collapsible && (
-        <Button
-          className="py-1 text-[length:var(--conversation-caption-font-size)]"
-          onClick={() => setShowAll(v => !v)}
-          size="inline"
-          type="button"
-          variant="text"
-        >
-          {showAll ? p.collapse : connected.length > 0 ? p.connectAnother : p.otherProviders}
-          <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
-        </Button>
       )}
     </section>
   )
@@ -236,26 +201,18 @@ function ConnectedProviderRow({
   disconnecting,
   onDisconnect,
   onSelect,
-  onTerminalDisconnect,
   provider
 }: {
   disconnecting: boolean
   onDisconnect: (provider: OAuthProvider) => void
   onSelect: (provider: OAuthProvider) => void
-  onTerminalDisconnect: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
   const copy = t.settings.providers
   const title = providerTitle(provider)
-  const Trail = provider.flow === 'external' ? Terminal : ChevronRight
-  // Hermes can clear this provider's creds via the API.
-  const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
-  // External (CLI-managed) provider Hermes can't clear via the API, but ships a
-  // command we can run in the embedded terminal (Electron shell only).
-  const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
-  // Only fall back to a static "remove it elsewhere" hint when we offer no button.
-  const showHint = !canDisconnect && !terminalDisconnect
+  const canDisconnect = provider.disconnectable ?? true
+  const showHint = !canDisconnect
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
@@ -270,12 +227,12 @@ function ConnectedProviderRow({
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
         {showHint && (
           <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
-            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
+            {copy.removeKeyManaged(title)}
           </p>
         )}
       </RowButton>
       <div className="flex items-center gap-1 pr-2">
-        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
         {canDisconnect && (
           <Button
             aria-label={`${t.common.remove} ${title}`}
@@ -287,18 +244,6 @@ function ConnectedProviderRow({
             variant="ghost"
           >
             {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-          </Button>
-        )}
-        {terminalDisconnect && (
-          <Button
-            aria-label={`${copy.disconnect} ${title}`}
-            onClick={() => onTerminalDisconnect(provider)}
-            size="icon-xs"
-            title={copy.disconnectInTerminal}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="size-3" />
           </Button>
         )}
       </div>
@@ -346,13 +291,7 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
   )
 }
 
-export function ProvidersSettings({
-  onClose,
-  onConfigSaved,
-  onMainModelChanged,
-  onViewChange,
-  view
-}: ProvidersSettingsProps) {
+export function ProvidersSettings({ onConfigSaved, onMainModelChanged, onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const scopeProfile = useStore($settingsRequestProfile)
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
@@ -393,39 +332,6 @@ export function ProvidersSettings({
 
     return () => void (cancelled = true)
   }, [onboardingActive, scopeProfile])
-
-  // External (CLI-managed) providers can't be cleared via the API by design —
-  // Hermes never deletes creds another tool owns behind a silent API call.
-  // Instead we run the documented removal command in the embedded terminal so
-  // the user sees exactly what executes, then return them to chat to watch it.
-  async function handleTerminalDisconnect(provider: OAuthProvider) {
-    const command = provider.disconnect_command
-
-    if (!command) {
-      return
-    }
-
-    const name = providerTitle(provider)
-
-    const ok = await confirm({
-      confirmLabel: t.settings.providers.disconnect,
-      destructive: true,
-      title: t.settings.providers.removeTerminalConfirm(name, command)
-    })
-
-    if (!ok) {
-      return
-    }
-
-    // Leave the settings overlay so the terminal pane (chat-only) is visible.
-    onClose()
-    runInTerminal(command)
-    notify({
-      kind: 'info',
-      title: t.settings.providers.removedTitle,
-      message: t.settings.providers.removeTerminalRunning(name)
-    })
-  }
 
   async function handleDisconnect(provider: OAuthProvider) {
     const name = providerTitle(provider)
@@ -536,7 +442,6 @@ export function ProvidersSettings({
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}
-        onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
         onWantLocalModels={() => onViewChange('local')}
         profile={scopeProfile}

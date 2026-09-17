@@ -208,6 +208,7 @@ def _loaded_pool(key: Any):
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
+    *, override_base_url: Optional[str] = None, override_api_key: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
     its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
@@ -221,6 +222,11 @@ def _resolve_child_credential_pool(
     endpoint identity (the ``custom:<name>`` pool key derived from the base_url) and only share the parent's
     pool when both resolve to the *same* custom endpoint. See #7833.
     """
+    # Explicit child routes/keys are authoritative even for the same provider.
+    # Returning None preserves any destination-owned pool resolved by AIAgent;
+    # loading the provider-wide pool here could overwrite that route on lease.
+    if override_base_url or override_api_key:
+        return None
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
         return parent_pool
@@ -287,44 +293,13 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
     }
 
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
-    """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
-    # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
-    # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
-    # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak
-    # the Anthropic Messages protocol. Fixes #10213.
+    """Explicit endpoints remain custom routes; credentials never come from another provider."""
     from hermes_cli.runtime_provider import _detect_api_mode_for_url
-    base_lower = v["base_url"].lower()
-    host = base_url_hostname(v["base_url"])
-    provider = "custom"
-    api_mode = _detect_api_mode_for_url(v["base_url"]) or "chat_completions"
-    if host == "chatgpt.com" and "/backend-api/codex" in base_lower:
-        provider, api_mode = "openai-codex", "codex_responses"
-    elif host == "api.anthropic.com":
-        provider, api_mode = "anthropic", "anthropic_messages"
-    elif "api.kimi.com/coding" in base_lower:
-        api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic.
-    if v["api_mode"] in _EXPLICIT_API_MODES:
-        api_mode = v["api_mode"]
-
-    # Preserve the configured provider's request personality on an explicit endpoint.
-    request_overrides = None
-    if v["provider"]:
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
-            request_overrides = dict(runtime.get("request_overrides") or {}) or None
-
-        except Exception as exc:
-            logger.debug(
-                "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
-                v["provider"], exc,
-            )
-    # api_key None → inherited from parent in _build_child_agent
-    return _credential_bundle(
-        v["model"], provider, v["base_url"], v["api_key"], api_mode,
-        _merge_request_overrides(request_overrides, explicit_request_overrides),
-    )
+    api_mode = v["api_mode"] or _detect_api_mode_for_url(v["base_url"]) or "chat_completions"
+    if api_mode not in _EXPLICIT_API_MODES:
+        raise ValueError(f"Unsupported inference API mode: {api_mode}")
+    return _credential_bundle(v["model"], v["provider"] or "custom", v["base_url"], v["api_key"] or "no-key",
+                              api_mode, explicit_request_overrides)
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.provider`` branch: full bundle via the runtime provider system."""
@@ -337,7 +312,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers: copilot, nous, custom, custom:<name>."
         ) from exc
 
     api_key = runtime.get("api_key", "")
@@ -364,16 +339,22 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint (a missing ``api_key`` uses a keyless placeholder, never the parent's credential);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
+    from hermes_cli.provider_policy import require_supported_provider
+    from hermes_cli.providers import normalize_provider
+    from hermes_cli.runtime_provider_custom import canonical_custom_identity
+    if cfg.get("command") or cfg.get("acp_command") or cfg.get("args") or cfg.get("acp_args"):
+        raise ValueError("Retired external-process delegation transport; use a direct provider")
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    if values["provider"]:
+        from hermes_cli.auth import resolve_provider
+        values["provider"] = resolve_provider(values["provider"])
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
-    is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
-
-    if values["base_url"] and not is_native_sdk_provider:
+    if values["base_url"]:
         return _direct_endpoint_credentials(values, explicit_request_overrides)
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
@@ -467,29 +448,13 @@ def _resolve_child_runtime(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
-    # A pinned transport that cannot run must fail the spawn loudly, never fall
-    # back silently (delegate_task pre-validates; this covers direct callers).
-    _require_pinned_command(
-        override_acp_command, f"Pinned delegation command '{override_acp_command}' was not "
-        f"found on PATH. Install it or remove delegation.command from config.yaml.",
-    )
-    effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
-    effective_acp_args = list(
-        override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
-    )
-    # A pinned provider must use direct API calls; inheriting the parent's ACP
-    # transport would bypass the override credentials entirely.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
-    # override credentials entirely (issue #16816).
-    if override_provider and not override_acp_command:
-        effective_acp_command, effective_acp_args = None, []
-    # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
-    # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
-    # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
-        effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+    if override_acp_command or override_acp_args:
+        raise ValueError("Retired external-process delegation transport; use a direct provider")
+    from hermes_cli.provider_policy import require_supported_provider
+    from hermes_cli.runtime_provider_custom import canonical_custom_identity
+    effective_provider = require_supported_provider(
+        canonical_custom_identity(config_provider=effective_provider) or effective_provider)
+    effective_acp_command, effective_acp_args = None, []
 
     # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
@@ -506,8 +471,11 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Route overrides own their credential, including explicit keyless endpoints.
+    # Keep this guard here too: callers may supply constructor overrides directly.
+    inherited_key = parent_api_key if not override_base_url and effective_provider == _parent_provider else "no-key"
     kwargs: Dict[str, Any] = {
-        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
+        "base_url": effective_base_url, "api_key": override_api_key or inherited_key, "model": effective_model,
         "provider": effective_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,

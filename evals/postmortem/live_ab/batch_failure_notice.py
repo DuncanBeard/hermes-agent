@@ -11,7 +11,7 @@ import tools.delegate_tool as dt
 import tools.delegate_tool_dispatch as dd
 from tools.process_registry import process_registry
 
-parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="test-provider", model="test/model",
+parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="custom", model="test/model",
                  quiet_mode=True, skip_context_files=True, skip_memory=True)
 parent.api_mode = "chat_completions"
 

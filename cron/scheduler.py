@@ -1516,6 +1516,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not isinstance(entry, dict):
                 continue
             fb_provider = str(entry.get("provider") or "").strip()
+            if fb_provider:
+                from hermes_cli.auth import resolve_provider
+                fb_provider = resolve_provider(fb_provider)
             fb_model = str(entry.get("model") or "").strip()
             if not fb_provider or not fb_model:
                 continue
@@ -2217,7 +2220,6 @@ class _FireAudit:
             "error": error})
 
 
-
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
@@ -2819,7 +2821,6 @@ def _deliver_crash_failure(
     if delivery_outcome in ("delivered", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
-
 
 
 def _run_one_job_body(

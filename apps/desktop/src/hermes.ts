@@ -81,8 +81,6 @@ export type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
-  MoaConfigResponse,
-  MoaModelSlot,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,

@@ -488,24 +488,6 @@ def test_cancelled_attempt_does_not_close_or_fail_concurrent_shared_client_call(
         b_release.set()
 
 
-def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> None:
-    from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
-
-    started = threading.Event()
-    release = threading.Event()
-    runtime_client = _BedrockRuntimeClient(started, release)
-    reset_client_cache()
-    _bedrock_runtime_client_cache["us-test-1"] = runtime_client
-    client = aux.BedrockAuxiliaryClient("us-test-1", "bedrock-test")
-    try:
-        exc, elapsed = _cancel_silent_request(client, started, _invoke_generic)
-    finally:
-        release.set()
-        reset_client_cache()
-
-    assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
-    assert not runtime_client.closed.is_set()
-    assert elapsed < 0.75
 
 
 def test_unprotected_sync_completion_stays_on_calling_thread() -> None:

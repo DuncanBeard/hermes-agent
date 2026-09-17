@@ -54,16 +54,16 @@ def hermes_home(tmp_path, monkeypatch):
     _clear_provider_caches()
 
 
-def test_flat_installed_model_provider_plugins_are_discovered_alongside_nested_ones(hermes_home):
+def test_flat_and_nested_plugins_cannot_register_external_process_accounts(hermes_home):
     _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
                   manifest='name: installed-acp\nkind: "model-provider"\n')
     _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
     from providers import get_provider_profile
 
-    assert get_provider_profile("installed-acp").base_url == "acp://installed-acp"
-    assert get_provider_profile("installed-acp-alias") is not None
-    assert get_provider_profile("nested-acp") is not None
+    assert get_provider_profile("installed-acp") is None
+    assert get_provider_profile("installed-acp-alias") is None
+    assert get_provider_profile("nested-acp") is None
 
 
 def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(hermes_home):
@@ -75,4 +75,4 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
     from providers import get_provider_profile, list_providers
 
     assert not [p for p in list_providers() if p.name in ("other-standalone", "manifestless", "broken-manifest")]
-    assert get_provider_profile("copilot-acp") is not None  # bundled set still intact
+    assert get_provider_profile("copilot") is not None  # bundled set still intact

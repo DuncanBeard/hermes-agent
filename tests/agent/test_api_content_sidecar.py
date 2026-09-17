@@ -163,7 +163,7 @@ class _FakeAgent:
         self.session_id = "sess-1"
         self.model = "test/model"
         self.provider = "openrouter"
-        self.base_url = "https://openrouter.ai/api/v1"
+        self.base_url = "https://example.invalid/v1"
         self.api_key = "sk-x"
         self.api_mode = "chat_completions"
         self.platform = "cli"
@@ -269,17 +269,6 @@ class TestPrologueStamping:
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
         assert agent.api_content_at_persist is None
 
-    def test_no_stamp_for_codex_app_server(self):
-        """codex_app_server turns bypass the api_messages build, so the
-        injected bytes are never sent — stamping would persist a lie."""
-        agent = _FakeAgent()
-        agent.api_mode = "codex_app_server"
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +281,7 @@ class TestFlushOverrideSidecar:
 
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            provider="custom", base_url="https://example.invalid/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -449,7 +438,7 @@ def wire_env():
     def make_agent():
         agent = AIAgent(
             api_key="test-key", base_url=f"http://127.0.0.1:{port}/v1",
-            provider="openai-compat", model="test-model",
+            provider="custom", model="test-model",
             max_iterations=10, enabled_toolsets=[],
             quiet_mode=True, skip_context_files=True, skip_memory=True,
             save_trajectories=False, platform="cli",
@@ -459,7 +448,8 @@ def wire_env():
         return agent
 
     try:
-        with patch(
+        # Exclude unrelated title traffic without relaxing conversation wire assertions.
+        with patch("agent.title_generator.maybe_auto_title"), patch(
             "hermes_cli.plugins.invoke_hook",
             side_effect=lambda hook, **kw: (
                 [{"context": "PLUGIN-CTX"}] if hook == "pre_llm_call" else []
@@ -570,17 +560,6 @@ class TestReanchorCurrentTurnUserIdx:
 
 
 class TestPrologueMoaAndInPlaceBackfill:
-    def test_no_stamp_for_moa_turns(self):
-        """MoA appends per-call aggregated context to the API copy AFTER the
-        composition — a stamped sidecar would persist bytes that never match
-        the wire."""
-        agent = _FakeAgent()
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            ctx = _build(agent, moa_active=True)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
     def test_inplace_compaction_backfills_sidecar_into_db(self):
         """In-place preflight compaction inserts the current-turn user row
@@ -678,7 +657,7 @@ class TestFlushCompressedSummaryOverrideGuard:
 
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            provider="custom", base_url="https://example.invalid/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -786,7 +765,7 @@ class TestFlushSanitizeDivergenceCapture:
 
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            provider="custom", base_url="https://example.invalid/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -851,7 +830,7 @@ class TestMaxIterationsSummaryReplay:
 
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            provider="custom", base_url="https://example.invalid/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -910,7 +889,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             agent = AIAgent(
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
+                provider="custom", base_url="https://example.invalid/v1",
                 model="test/model",
                 platform="cli",
                 quiet_mode=True,

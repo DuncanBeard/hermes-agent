@@ -224,8 +224,8 @@ def _make_agent():
     ):
         agent = AIAgent(
             api_key="fx",  # unused — the OpenAI client is mocked below
-            base_url="https://openrouter.ai/api/v1",
-            provider="openrouter",
+            base_url="https://example.invalid/v1",
+            provider="custom",
             model="x-ai/grok-5",
             quiet_mode=True,
             skip_context_files=True,

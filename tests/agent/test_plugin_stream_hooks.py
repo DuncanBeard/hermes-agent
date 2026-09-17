@@ -10,8 +10,8 @@ def _agent():
 
     return AIAgent(
         api_key="test-key",
-        base_url="https://openrouter.ai/api/v1",
-        provider="openrouter",
+        base_url="https://example.invalid/v1",
+        provider="custom",
         model="test/model",
         quiet_mode=True,
         skip_context_files=True,
@@ -75,7 +75,7 @@ def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
     assert calls[0][1]["delta"] == "hello"
     assert calls[0][1]["kind"] == "text"
     assert calls[0][1]["model"] == "test/model"
-    assert calls[0][1]["provider"] == "openrouter"
+    assert calls[0][1]["provider"] == "custom"
 
 
 def test_stream_delta_plugin_hook_error_does_not_break_streaming(monkeypatch):
@@ -317,55 +317,3 @@ def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, 
     end_call = next(call for call in calls if call[0] == "on_stream_end")
     assert end_call[1]["final_text"] == "hello world"
     assert end_call[1]["finished"] is True
-
-
-def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
-
-    shutdown_plugin_stream_hook_dispatcher()
-    calls = []
-
-    def on_stream_delta(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
-    monkeypatch.setattr("hermes_cli.config.cfg_get", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        "agent.bedrock_adapter._get_bedrock_runtime_client",
-        lambda _region: SimpleNamespace(converse_stream=lambda **_kwargs: {"stream": []}),
-    )
-    monkeypatch.setattr("agent.bedrock_adapter.is_stale_connection_error", lambda _exc: False)
-    monkeypatch.setattr("agent.bedrock_adapter.is_streaming_access_denied_error", lambda _exc: False)
-    monkeypatch.setattr("agent.bedrock_adapter.invalidate_runtime_client", lambda *_args, **_kwargs: None)
-
-    def stream_converse_with_callbacks(
-        _raw_response,
-        *,
-        on_text_delta=None,
-        on_tool_start=None,
-        on_reasoning_delta=None,
-        on_interrupt_check=None,
-        on_event=None,
-        **_kwargs,
-    ):
-        # Main's Bedrock path also invokes this as a Relay finalizer with the
-        # intercepted-event replay; only the live pass wires callbacks.
-        if on_reasoning_delta is not None:
-            assert on_tool_start is not None
-            assert on_interrupt_check() is False
-            on_reasoning_delta("bedrock reasoning")
-        return SimpleNamespace(choices=[], usage=None, stop_reason="end_turn")
-
-    monkeypatch.setattr("agent.bedrock_adapter.stream_converse_with_callbacks", stream_converse_with_callbacks)
-
-    agent = _agent()
-    agent.api_mode = "bedrock_converse"
-    agent.reasoning_callback = None
-    agent.stream_delta_callback = None
-
-    agent._interruptible_streaming_api_call({"__bedrock_region__": "us-east-1", "__bedrock_converse__": True})
-    _wait_for(lambda: calls)
-    shutdown_plugin_stream_hook_dispatcher()
-
-    assert calls[0]["kind"] == "reasoning"
-    assert calls[0]["delta"] == "bedrock reasoning"

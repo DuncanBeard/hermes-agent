@@ -1794,12 +1794,7 @@ all = [
 anthropic = [
     { name = "anthropic" },
 ]
-azure-identity = [
-    { name = "azure-identity" },
-]
-bedrock = [
-    { name = "boto3" },
-]
+
 computer-use = [
     { name = "httpx2" },
     { name = "mcp" },
@@ -1950,9 +1945,7 @@ tts-premium = [
 vercel = [
     { name = "vercel" },
 ]
-vertex = [
-    { name = "google-auth" },
-]
+
 voice = [
     { name = "faster-whisper" },
     { name = "numpy" },
@@ -1996,8 +1989,7 @@ requires-dist = [
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
-    { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
-    { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
+
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
     { name = "certifi", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
@@ -2022,7 +2014,7 @@ requires-dist = [
     { name = "google-api-python-client", marker = "extra == 'google-chat'", specifier = "==2.194.0" },
     { name = "google-auth", marker = "extra == 'google'", specifier = "==2.55.1" },
     { name = "google-auth", marker = "extra == 'google-chat'", specifier = "==2.55.1" },
-    { name = "google-auth", marker = "extra == 'vertex'", specifier = "==2.55.1" },
+
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-httplib2", marker = "extra == 'google-chat'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
@@ -2129,7 +2121,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

@@ -1230,9 +1230,6 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
-      moaTitle: string
-      moaPreset: string
-      moaAggregator: string
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
@@ -2970,10 +2967,8 @@ export interface Translations {
     recommended: string
     connected: string
     featuredPitch: string
-    fireworksPitch: string
     localModelsTitle: string
     localModelsPitch: string
-    openRouterPitch: string
     apiKeyOptions: Record<string, { short: string; description: string }>
     backToSignIn: string
     getKey: string

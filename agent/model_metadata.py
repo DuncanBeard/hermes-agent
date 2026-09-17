@@ -1777,18 +1777,7 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     if _infer_provider_from_url(base_url) == "nous":
         logger.debug("Bypassing persistent cache for %s@%s (Nous portal authoritative)", model, base_url)
         return None
-    if is_bedrock_context:
-        # Bedrock: the static table is a FLOOR — probe-derived entries may legitimately exceed it.
-        try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            bedrock_ctx = get_bedrock_context_length(model)
-        except ImportError:
-            return cached
-        if cached < bedrock_ctx:
-            logger.info("Dropping stale Bedrock cache entry %s@%s -> %s; using static Bedrock table value %s", model, base_url, f"{cached:,}", f"{bedrock_ctx:,}")
-            _invalidate_cached_context_length(model, base_url)
-            return bedrock_ctx
-        return cached
+
     # For local endpoints, run the probe that respects configured Modelfile context values first.
     # _query_local_context_length prefers num_ctx from Modelfile, while _query_ollama_api_show returns the
     # GGUF training max first which can be larger and would create a false-safe window for compression
@@ -1796,31 +1785,6 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     if is_local_endpoint(base_url):
         return _reconcile_local_cached_context_length(model, base_url, cached, api_key=api_key)
     return cached
-
-
-def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
-    """Step 1b: Bedrock static table + one cached live probe (Bedrock exposes no context window via
-    metadata APIs); None when boto3 is absent. Cached per model under base_url, else a synthetic
-    bedrock:// key so display/offline paths share it."""
-    try:
-        from agent.bedrock_adapter import get_bedrock_context_length, resolve_bedrock_region
-    except ImportError:
-        return None  # boto3 not installed — fall through to generic resolution
-    cache_key_url = base_url or "bedrock://"
-    cached = get_cached_context_length(model, cache_key_url)
-    if cached is not None:
-        return cached
-    # Region from the base_url host first, then the standard AWS chain. An empty region disables probing (table only).
-    _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url) if base_url else None
-    region = _m.group(1) if _m else ""
-    if not region:
-        with contextlib.suppress(Exception):
-            region = resolve_bedrock_region()
-    ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
-    # Only persist probe-derived values (region present); a pure table fallback must not poison the cache.
-    if ctx and region:
-        save_context_length(model, cache_key_url, ctx)
-    return ctx
 
 
 def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
@@ -1855,28 +1819,6 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     return DEFAULT_FALLBACK_CONTEXT
 
 
-def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Optional[int]:
-    """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
-    the aggregator's real provider+model (references are advisory). None on any failure."""
-    try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config
-        from hermes_cli.moa_config import resolve_moa_preset
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        config = load_config()
-        if custom_providers is None:
-            custom_providers = get_compatible_custom_providers(config)
-        agg = resolve_moa_preset(config.get("moa") or {}, model).get("aggregator") or {}
-        agg_provider = str(agg.get("provider") or "").strip()
-        agg_model = str(agg.get("model") or "").strip()
-        if agg_model and agg_provider and agg_provider.lower() != "moa":
-            rt = resolve_runtime_provider(requested=agg_provider, target_model=agg_model)
-            return get_model_context_length(
-                agg_model, base_url=rt.get("base_url", "") or "", api_key=rt.get("api_key", "") or "",
-                provider=rt.get("provider") or agg_provider, custom_providers=custom_providers,
-            )
-    except Exception:
-        logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
-    return None
 
 
 def _config_override_context_length(model: str, base_url: str, provider: str, custom_providers: list | None) -> Optional[int]:
@@ -1973,10 +1915,6 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
-    if (provider or "").strip().lower() == "moa":
-        ctx = _resolve_moa_context_length(model, custom_providers)
-        if ctx is not None:
-            return ctx
     ctx = _config_override_context_length(model, base_url, provider, custom_providers)
     if ctx is not None:
         return ctx
@@ -2016,7 +1954,7 @@ def get_model_context_length(
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in
     # _URL_TO_PROVIDER and would fail the /models probe into the default.
-    ctx = _resolve_bedrock_context_length(model, base_url) if is_bedrock_context else None
+    ctx = None
     if ctx is not None:
         return ctx
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):

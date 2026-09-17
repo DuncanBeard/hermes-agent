@@ -266,17 +266,6 @@ def _join_truncated_parts(parts: List[str]) -> str:
     return joined
 
 
-def _moa_reference_metrics_for_hook(agent: Any) -> Any:
-    """Per-advisor metrics for post_api_request, or None off the MoA path (a plugin only
-    sees the aggregator generation; this carries the per-slot advisor spend)."""
-    client = getattr(agent, "client", None)
-    getter = getattr(client, "last_reference_metrics", None)
-    if not callable(getter):
-        return None
-    try:
-        return getter()
-    except Exception:
-        return None
 
 
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
@@ -877,8 +866,6 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 )
 
 
-
-
 # Memo for send-path tool-call argument canonicalization (re-run on every historical call
 # each iteration). Sound because canonicalization is pure; malformed strings raise before
 # being stored, so the repair fallback is never memoized. The byte budget exists because
@@ -1096,10 +1083,6 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     reconstruct_static_prefix(agent, system_message=system_message, log_label="failover redecoration")
 
 
-def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Dict[str, Any]]:
-    """Remove MoA reference guidance attached by ``_attach_reference_guidance``."""
-    from agent.moa_loop import peel_reference_guidance
-    return peel_reference_guidance(messages, guidance)
 
 
 def _redecorate_prompt_cache_for_provider(
@@ -1109,26 +1092,13 @@ def _redecorate_prompt_cache_for_provider(
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
     messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
-    prepared = moa_prepared
-    guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
-    if guidance:
-        messages = _peel_moa_guidance(messages, guidance)
+    prepared = None
 
     strip_anthropic_cache_control(messages)
     planned_tools = strip_anthropic_tool_cache_control(
         tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
     )
-    if prepared is not None and getattr(agent, "provider", None) == "moa":
-        # Prepared MoA state is canonical: the synchronous acting-aggregator
-        # sender owns its destination-local cache plan after it resolves the slot.
-        completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-        rebase = getattr(completions, "rebase_prepared_request", None)
-        if callable(rebase):
-            prepared = rebase(prepared, messages)
-            messages = prepared["messages"]
-    # Direct attribute access, not getattr: the flags are always initialized on
-    # AIAgent, and a default would mask a real init bug as silent cache-off.
-    elif agent._use_prompt_caching:
+    if agent._use_prompt_caching:
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
@@ -1236,19 +1206,6 @@ def _notify_context_engine_turn_complete(
         )
 
 
-def _decode_inline_moa_turn(user_message, persist_user_message):
-    """Decode a MoA preset encoded into ``user_message``; returns ``(user_message,
-    moa_config, persist_user_message)``, unchanged with ``moa_config=None`` otherwise."""
-    try:
-        from hermes_cli.moa_config import decode_moa_turn
-        _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
-        if _decoded_moa_config is not None:
-            if persist_user_message is None:
-                persist_user_message = _decoded_message
-            return _decoded_message, _decoded_moa_config, persist_user_message
-    except Exception:
-        pass
-    return user_message, None, persist_user_message
 
 
 def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any]:
@@ -1440,10 +1397,8 @@ def _run_conversation_turn(
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
-    if moa_config is None:
-        user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
-            user_message, persist_user_message
-        )
+    if moa_config is not None:
+        raise ValueError("MoA is retired; select a supported provider.")
 
     # The gateway caches agents across turns; compression state is per-turn, or a stale
     # in-place boundary would make a later uncompressed result look compacted.
@@ -1503,12 +1458,7 @@ def _run_conversation_turn(
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
+
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
