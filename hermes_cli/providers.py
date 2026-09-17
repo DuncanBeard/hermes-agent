@@ -27,70 +27,10 @@ class HermesOverlay:
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
-    "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
-    "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
-    "openai-codex": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
-                                  base_url_override="https://chatgpt.com/backend-api/codex"),
-    "openai-api": HermesOverlay(transport="codex_responses", base_url_override="https://api.openai.com/v1",
-                                base_url_env_var="OPENAI_BASE_URL"),
-    "xai-oauth": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
-                               base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
-    "qwen-oauth": HermesOverlay(auth_type="oauth_external", base_url_override="https://portal.qwen.ai/v1",
-                                base_url_env_var="HERMES_QWEN_BASE_URL"),
-    "lmstudio": HermesOverlay(extra_env_vars=("LM_API_KEY",), base_url_override="http://127.0.0.1:1234/v1",
-                              base_url_env_var="LM_BASE_URL"),
-    "copilot-acp": HermesOverlay(transport="codex_responses", auth_type="external_process",
-                                 base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
-    "github-copilot": HermesOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
-    "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
-    "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
-    "kimi-for-coding": HermesOverlay(base_url_env_var="KIMI_BASE_URL"),
-    "stepfun": HermesOverlay(extra_env_vars=("STEPFUN_API_KEY",),
-                             base_url_override="https://api.stepfun.ai/step_plan/v1",
-                             base_url_env_var="STEPFUN_BASE_URL"),
-    "minimax": HermesOverlay(transport="anthropic_messages", base_url_env_var="MINIMAX_BASE_URL"),
-    "minimax-oauth": HermesOverlay(transport="anthropic_messages", auth_type="oauth_external",
-                                   base_url_override="https://api.minimax.io/anthropic"),
-    "minimax-cn": HermesOverlay(transport="anthropic_messages", base_url_env_var="MINIMAX_CN_BASE_URL"),
-    "deepseek": HermesOverlay(base_url_env_var="DEEPSEEK_BASE_URL"),
-    "alibaba": HermesOverlay(base_url_env_var="DASHSCOPE_BASE_URL"),
-    "alibaba-coding-plan": HermesOverlay(base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL"),
-    "vercel": HermesOverlay(is_aggregator=True),
-    "opencode": HermesOverlay(is_aggregator=True, base_url_env_var="OPENCODE_ZEN_BASE_URL"),
-    "opencode-go": HermesOverlay(is_aggregator=True, base_url_env_var="OPENCODE_GO_BASE_URL"),
-    "opencode-free": HermesOverlay(is_aggregator=True, base_url_override="https://opencode.ai/zen/v1", keyless=True),
-    "kilo": HermesOverlay(is_aggregator=True, base_url_env_var="KILOCODE_BASE_URL"),
-    "huggingface": HermesOverlay(is_aggregator=True, base_url_env_var="HF_BASE_URL"),
-    "novita": HermesOverlay(is_aggregator=True, base_url_env_var="NOVITA_BASE_URL"),
-    "xai": HermesOverlay(transport="codex_responses", base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
-    "nvidia": HermesOverlay(base_url_override="https://integrate.api.nvidia.com/v1", base_url_env_var="NVIDIA_BASE_URL"),
-    "xiaomi": HermesOverlay(base_url_env_var="XIAOMI_BASE_URL"),
-    "tencent-tokenhub": HermesOverlay(base_url_env_var="TOKENHUB_BASE_URL"),
-    "tencent-tokenplan": HermesOverlay(transport="anthropic_messages",
-                                       base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
-                                       base_url_env_var="TOKENPLAN_BASE_URL"),
-    "arcee": HermesOverlay(base_url_override="https://api.arcee.ai/api/v1", base_url_env_var="ARCEE_BASE_URL"),
-    "gmi": HermesOverlay(extra_env_vars=("GMI_API_KEY",), base_url_override="https://api.gmi-serving.com/v1",
-                         base_url_env_var="GMI_BASE_URL"),
-    "fireworks": HermesOverlay(extra_env_vars=("FIREWORKS_API_KEY",),
-                               base_url_override="https://api.fireworks.ai/inference/v1"),
-    "actual": HermesOverlay(transport="chat_completions", extra_env_vars=("ACTUAL_API_KEY",),
-                            base_url_override="https://api.actual.inc/v1", base_url_env_var="ACTUAL_BASE_URL"),
-    "upstage": HermesOverlay(extra_env_vars=("UPSTAGE_API_KEY",), base_url_override="https://api.upstage.ai/v1",
-                             base_url_env_var="UPSTAGE_BASE_URL"),
-    "nebius-token-factory": HermesOverlay(extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
-                                          base_url_override="https://api.tokenfactory.nebius.com/v1",
-                                          base_url_env_var="NEBIUS_BASE_URL"),
-    "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
-    # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
-    "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
-    "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
-    # Vertex is OAuth2 (service-account JSON / ADC), resolved by agent/vertex_adapter.py. Without an
-    # overlay get_provider("vertex") is None and auxiliary_client._preserve_provider_with_base_url
-    # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
-    # _refresh_provider_credentials() needs to re-mint an expired token on 401.
-    "vertex": HermesOverlay(auth_type="vertex"),
+    "copilot": HermesOverlay(auth_type="copilot", extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+                              base_url_override="https://api.githubcopilot.com", base_url_env_var="COPILOT_API_BASE_URL"),
+    "custom": HermesOverlay(is_aggregator=True),
 }
 
 
@@ -115,26 +55,9 @@ class ProviderDef:
 # -- Aliases: human-friendly / legacy names grouped by canonical (models.dev where possible) id;
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
 _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
-    "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
-    "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
-    "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
-    "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
-    "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
-    "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
-    "copilot-acp": ("github-copilot-acp",), "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
-    "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"),
-    "opencode-free": ("free", "opencode_free"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
-    "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
-    "alibaba-coding-plan": ("alibaba_coding", "alibaba-coding", "alibaba_coding_plan"),
-    "huggingface": ("hf", "hugging-face", "huggingface-hub"), "novita": ("novita-ai", "novitaai"),
-    "xiaomi": ("mimo", "xiaomi-mimo"), "tencent-tokenhub": ("tencent", "tokenhub", "tencent-cloud", "tencentmaas"),
-    "tencent-tokenplan": ("tokenplan", "tencent-lkeap"),
-    "bedrock": ("aws", "aws-bedrock", "amazon-bedrock", "amazon"), "arcee": ("arcee-ai", "arceeai"),
-    "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
-    "actual": ("actual-computer", "actualcomputer", "aci"),
-    "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
-    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
-    "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    "copilot": ("github-copilot", "github", "github-models", "github-model"),
+    "nous": ("nous-portal", "nousresearch"),
+    "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
 ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
@@ -142,12 +65,7 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 # -- Display labels for providers not in the models.dev catalog ---------------
 
 _LABEL_OVERRIDES: Dict[str, str] = {
-    "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
-    "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
-    "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
-    "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
-    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)", "opencode-free": "OpenCode Free",
+    "nous": "Nous Portal", "copilot": "GitHub Copilot", "custom": "Custom endpoint",
 }
 
 
@@ -192,40 +110,13 @@ def _overlay_pdef(canonical, ov: HermesOverlay, name, env_vars, base_url, doc, s
 
 
 def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
-    """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
-    Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
+    """Account catalog, deliberately independent of models.dev's vendor accounts."""
     canonical = normalize_provider(name)
-    mdev_info = _models_dev_info(canonical, allow_network)
     overlay = HERMES_OVERLAYS.get(canonical)
-    if mdev_info is not None:
-        ov = overlay or HermesOverlay()
-        env_vars = list(mdev_info.env)
-        for ev in ov.extra_env_vars:
-            if ev not in env_vars:
-                env_vars.append(ev)
-        return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
-                             mdev_info.doc, "models.dev")
-    if overlay is not None:
-        return _overlay_pdef(canonical, overlay, _LABEL_OVERRIDES.get(canonical, canonical), overlay.extra_env_vars,
-                             overlay.base_url_override, "", "hermes")
-    # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
-    # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
-    # even though the picker lists them. Only profiles with a concrete endpoint resolve here:
-    # placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship an empty base_url and
-    # are completed by config.yaml custom_providers — resolving them would preempt
-    # resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare custom.
-    try:
-        from providers import get_provider_profile as _profile
-        _prof = _profile(canonical)
-        if _prof is not None and (_prof.base_url or "").strip():
-            _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-            return ProviderDef(id=canonical, name=_prof.display_name or _prof.name or canonical,
-                               transport=_api_mode_to_transport.get(_prof.api_mode, "openai_chat"),
-                               api_key_env_vars=tuple(_prof.env_vars or ()), base_url=_prof.base_url or "",
-                               auth_type=_prof.auth_type or "api_key", source="plugin-profile")
-    except Exception:
-        pass
-    return None
+    if overlay is None:
+        return None
+    return _overlay_pdef(canonical, overlay, _LABEL_OVERRIDES[canonical], overlay.extra_env_vars,
+                         overlay.base_url_override, "", "hermes")
 
 
 def get_label(provider_id: str) -> str:
@@ -478,41 +369,17 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
 
 def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = None,
                           custom_providers: Optional[List[Dict[str, Any]]] = None) -> Optional[ProviderDef]:
-    """Full resolution chain: user ``providers.<raw name>`` -> lossy-alias registry id -> built-in
-    (models.dev + overlays) -> user providers (canonical, then raw) -> ``custom_providers`` ->
-    managed llamacpp -> models.dev directly. User-defined ``providers.<name>`` is tried FIRST on
-    the raw (pre-alias) name: a configured ``providers.openai`` pointing at api.openai.com must not
-    be hijacked by the legacy "openai" -> "openrouter" alias."""
-    canonical = normalize_provider(name)
-    raw = name.strip().lower()
+    """Configured endpoint names first, then supported accounts; never import vendor accounts."""
+    raw = str(name or "").strip().lower()
     if user_providers:
-        user_pdef = resolve_user_provider(raw, user_providers)
-        if user_pdef is not None:
-            return user_pdef
-    if canonical != raw:
-        pdef = _lossy_alias_registry_pdef(raw, canonical)
-        if pdef is not None:
-            return pdef
-    pdef = get_provider(canonical)
-    if pdef is not None:
-        return pdef
-    if user_providers:
-        for candidate in (canonical, raw):
-            user_pdef = resolve_user_provider(candidate, user_providers)
-            if user_pdef is not None:
-                return user_pdef
-    custom_pdef = resolve_custom_provider(name, custom_providers)
-    if custom_pdef is not None:
-        return custom_pdef
-    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
-        pdef = _llamacpp_pdef()
-        if pdef is not None:
-            return pdef
-    try:
-        mdev_info = _models_dev_info(canonical)
-        if mdev_info is not None:
-            return ProviderDef(id=canonical, name=mdev_info.name, transport="openai_chat", api_key_env_vars=mdev_info.env,
-                               base_url=mdev_info.api, source="models.dev")
-    except Exception:
-        pass
-    return None
+        for key, entry in user_providers.items():
+            if not isinstance(entry, dict) or entry.get("enabled") is False:
+                continue
+            if raw not in custom_provider_aliases(str(entry.get("name") or key), str(key)):
+                continue
+            pdef = resolve_user_provider(key, user_providers)
+            if pdef and pdef.base_url:
+                pdef.id = custom_provider_slug(str(entry.get("name") or key), str(key))
+                return pdef
+    custom = resolve_custom_provider(raw, custom_providers)
+    return custom or get_provider(raw)

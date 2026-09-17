@@ -56,8 +56,6 @@ def _fire_post_api_request_hook(
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
     effective_task_id: Any, turn_id: Any,
 ) -> None:
-    from agent.conversation_loop import _moa_reference_metrics_for_hook
-
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
@@ -89,7 +87,7 @@ def _fire_post_api_request_hook(
                 assistant_message=assistant_message,
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),
-                moa_references=_moa_reference_metrics_for_hook(agent),
+                moa_references=[],
             )
     except Exception:
         pass

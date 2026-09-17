@@ -614,41 +614,6 @@ _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 _cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
 
 
-def _cmd_moa(rid, params, session, name, arg):
-    # One prompt through the default MoA preset, then restore the prior model (whole-session
-    # switching goes through the model picker).
-    try:
-        moa = _tools_mod("hermes_cli.moa_config")
-        if not arg:
-            return _err(rid, 4004, moa.moa_usage())
-        if not session:
-            return _err(rid, 4001, "no active session")
-        preset = moa.normalize_moa_config(_load_cfg().get("moa") or {})["default_preset"]
-        # Record the live identity for post-turn restore, then swap the agent's client in
-        # place: session["model_override"] alone never switches an already-built agent.
-        agent = session.get("agent")
-        # See #53444.
-        session["moa_one_shot_restore"] = {
-            "override": session.get("model_override"), "model": getattr(agent, "model", None),
-            "provider": getattr(agent, "provider", None)}
-        if agent is not None:
-            try:  # persist_override=False: turn-scoped, never persist the MoA provider to config.yaml
-                _apply_model_switch(
-                    params.get("session_id", ""), session, f"{preset} --provider moa",
-                    confirm_expensive_model=False, pin_session_override=True, persist_override=False)
-            except Exception:
-                session.pop("moa_one_shot_restore", None)
-                raise
-        else:  # lazy/fresh session: the override is consumed by the first build
-            session["model_override"] = {
-                "provider": "moa", "model": preset, "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions"}
-        notice = f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
-        return _ok(rid, {"type": "send", "notice": notice, "message": arg})
-    except Exception as exc:
-        return _err(rid, 5030, f"moa unavailable: {exc}")
-
-
 def _cmd_focus(rid, params, session, name, arg):
     # Display-only; routed through the config.set branch Ink uses so both surfaces share one state machine.
     fv = _tools_mod("hermes_cli.focus_view")
@@ -827,7 +792,7 @@ def _cmd_compress(rid, params, session, name, arg):
 
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
-    "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
+    "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 

@@ -61,7 +61,14 @@ def register_provider(profile: ProviderProfile) -> None:
     bundled profiles without editing repo code.
     """
     global _PROVIDER_LIST_CACHE
-    _REGISTRY[profile.name] = profile
+    from hermes_cli.provider_policy import require_supported_provider
+    from hermes_cli.providers import normalize_provider
+    canonical = require_supported_provider(profile.name)
+    for alias in profile.aliases:
+        require_supported_provider(normalize_provider(alias))
+        if normalize_provider(alias) != canonical:
+            raise ValueError(f"Provider alias {alias!r} cannot replace another supported account")
+    _REGISTRY[canonical] = profile
     for alias in profile.aliases:
         _ALIASES[alias] = profile.name
     _PROVIDER_LIST_CACHE = None

@@ -465,34 +465,6 @@ class GatewaySessionCommandsMixin:
         with _profile_runtime_scope(self._resolve_profile_home_for_source(event.source)):
             return await self._handle_compress_command_inner(event)
 
-    async def _compress_codex_app_server_session(self, session_key: str, session_id: str) -> str:
-        """Manual /compress for codex_app_server sessions: compacts the LIVE cached agent's
-        app-server thread (``force=True`` bypasses the ``codex_app_server_auto`` gate) and keeps it
-        cached. A temporary agent or a mirror rewrite cannot shrink the server-side thread.
-
-        See #73503.
-        """
-        from gateway.run import _AGENT_PENDING_SENTINEL
-
-        agent = self._cached_agent_for(session_key, lockless_fallback=True)
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_codex_session", None) is None:
-            return (
-                "🗜️ Nothing to compact: this session runs on the Codex app-server runtime, whose "
-                "context lives in a Codex-owned thread that only exists while the agent is active. "
-                "Send a message first, then /compress — or /reset to start fresh.")
-        compressor = getattr(agent, "context_compressor", None)
-        count_before = getattr(compressor, "compression_count", 0)
-        try:
-            await self._run_in_executor_with_context(lambda: agent._compress_context([], "", force=True))
-        except Exception as exc:
-            return t("gateway.compress.failed", error=exc)
-        if getattr(compressor, "compression_count", 0) > count_before:
-            return (
-                "🗜️ Codex app-server thread compacted (thread/compact). The transcript mirror is "
-                "unchanged by design — the app-server now carries the compacted context.")
-        return (
-            "⚠️ Codex app-server compaction did not complete — the thread is unchanged. Check the "
-            "app-server logs, retry /compress, or /reset for a clean session.")
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
@@ -530,10 +502,7 @@ class GatewaySessionCommandsMixin:
         # the original conversation, not a default "cli" host.
         platform_key = _platform_config_key(source.platform) if source.platform else None
         model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, session_key=session_key)
-        if str(runtime_kwargs.get("api_mode") or "").lower() == "codex_app_server":
-            # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
-            # has none (and finally-eviction would destroy the real context).
-            return await self._compress_codex_app_server_session(session_key, session_entry.session_id)
+
         if not runtime_kwargs.get("api_key"):
             return t("gateway.compress.no_provider")
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves

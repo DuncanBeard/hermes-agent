@@ -91,7 +91,6 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
-  "/api/model/moa",
   "/api/model/options",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
@@ -567,13 +566,6 @@ export const api = {
     fetchJSON<AuxiliaryModelsResponse>(
       appendProfileParam("/api/model/auxiliary", profile),
     ),
-  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
-  saveMoaModels: (body: MoaConfigResponse) =>
-    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
   setModelAssignment: (
     body: ModelAssignmentRequest,
     profile = getManagementProfile(),
@@ -867,15 +859,6 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
-      },
-    ),
-  submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
-    fetchJSON<OAuthSubmitResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, code }),
       },
     ),
   pollOAuthSession: (providerId: string, sessionId: string) =>
@@ -2469,39 +2452,6 @@ export interface AuxiliaryModelsResponse {
   main: { provider: string; model: string };
 }
 
-export interface MoaModelSlot {
-  provider: string;
-  model: string;
-  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
-  reasoning_effort?: string;
-  enabled?: boolean;
-}
-
-export interface MoaConfigResponse {
-  default_preset: string;
-  active_preset: string;
-  presets: Record<string, {
-    reference_models: MoaModelSlot[];
-    aggregator: MoaModelSlot;
-    reference_temperature: number;
-    aggregator_temperature: number;
-    reference_timeout: number | null;
-    degraded_reference_policy: "loud" | "silent";
-
-    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
-    fanout?: string;
-    enabled: boolean;
-  }>;
-  reference_models: MoaModelSlot[];
-  aggregator: MoaModelSlot;
-  reference_temperature: number;
-  aggregator_temperature: number;
-  reference_timeout: number | null;
-  degraded_reference_policy: "loud" | "silent";
-
-  enabled: boolean;
-}
-
 export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean;
   scope: "main" | "auxiliary";
@@ -2552,9 +2502,8 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   id: string;
   name: string;
-  /** "pkce" (browser redirect + paste code), "device_code" (show code + URL),
-   *  or "external" (delegated to a separate CLI like Claude Code or Qwen). */
-  flow: "pkce" | "device_code" | "external";
+  /** Inference provider login uses a device code and verification URL. */
+  flow: "device_code";
   cli_command: string;
   docs_url: string;
   status: OAuthProviderStatus;
@@ -2564,27 +2513,14 @@ export interface OAuthProvidersResponse {
   providers: OAuthProvider[];
 }
 
-/** Discriminated union — the shape of /start depends on the flow. */
-export type OAuthStartResponse =
-  | {
-      session_id: string;
-      flow: "pkce";
-      auth_url: string;
-      expires_in: number;
-    }
-  | {
-      session_id: string;
-      flow: "device_code";
-      user_code: string;
-      verification_url: string;
-      expires_in: number;
-      poll_interval: number;
-    };
-
-export interface OAuthSubmitResponse {
-  ok: boolean;
-  status: "approved" | "error";
-  message?: string;
+/** Device-code response for Nous and GitHub Copilot inference login. */
+export interface OAuthStartResponse {
+  session_id: string;
+  flow: "device_code";
+  user_code: string;
+  verification_url: string;
+  expires_in: number;
+  poll_interval: number;
 }
 
 export interface OAuthPollResponse {

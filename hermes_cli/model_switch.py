@@ -1029,13 +1029,6 @@ def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
     st.api_mode = ""  # clear so determine_api_mode re-detects from URL
 
 
-def _moa_default_preset() -> str:
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
-        return normalize_moa_config(load_config().get("moa") or {})["default_preset"]
-    except Exception:
-        return "default"
 
 
 @dataclass
@@ -1097,8 +1090,6 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         return st.fail(_unknown_provider_message(st.explicit_provider))
 
     st.target_provider, st.provider_label = pdef.id, pdef.name  # label is re-derived in the credential step
-    if st.target_provider == "moa" and not st.new_model:
-        st.new_model = _moa_default_preset()
 
     agg_err = _aggregator_alias_error(
         st.explicit_provider, st.target_provider, st.current_provider, st.user_providers, st.custom_providers)
@@ -1214,27 +1205,18 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     from hermes_cli.models import detect_provider_for_model
     raw_input, current_provider = st.raw_input, st.current_provider
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
-        moa_match = exact_moa_preset_name(normalize_moa_config(load_config().get("moa") or {}), raw_input)
-    except Exception:
-        moa_match = None  # MoA config unreadable: fall through to plain alias resolution
-    if moa_match:
-        st.target_provider, st.new_model, st.resolved_alias = "moa", moa_match, ""
+        alias_result = resolve_alias(raw_input, current_provider)
+    except AmbiguousAliasError as err:
+        return st.fail(_ambiguous_alias_message(err))
+    if alias_result is not None:
+        st.target_provider, st.new_model, st.resolved_alias = alias_result
+        logger.debug("Alias '%s' resolved to %s on %s", st.resolved_alias, st.new_model, st.target_provider)
+    elif raw_input.strip().lower() in MODEL_ALIASES:
+        fail = _route_alias_fallback(st, raw_input.strip().lower())
+        if fail is not None:
+            return fail
     else:
-        try:
-            alias_result = resolve_alias(raw_input, current_provider)
-        except AmbiguousAliasError as err:
-            return st.fail(_ambiguous_alias_message(err))
-        if alias_result is not None:
-            st.target_provider, st.new_model, st.resolved_alias = alias_result
-            logger.debug("Alias '%s' resolved to %s on %s", st.resolved_alias, st.new_model, st.target_provider)
-        elif raw_input.strip().lower() in MODEL_ALIASES:
-            fail = _route_alias_fallback(st, raw_input.strip().lower())
-            if fail is not None:
-                return fail
-        else:
-            _convert_vendor_colon_slug(st)
+        _convert_vendor_colon_slug(st)
 
     # Step d: if the CURRENT provider's live catalog resolved the model, step e must not
     # second-guess and switch providers — flat-namespace resellers (opencode-go/zen) return bare
@@ -1320,47 +1302,16 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
 
 
 def _creds_for_current_provider(st: _Switch) -> None:
-    """Credentials when staying on the current provider. Mid-session ``/model <name>`` on a local
-    Ollama-compatible endpoint keeps the endpoint in use; re-resolving bare ``custom`` from config
-    can fall through to an unrelated default provider."""
-    from hermes_cli.models_local import _get_ollama_request_headers, _same_ollama_native_root
-    keep_current_ollama_endpoint = False
-    ollama_headers: dict[str, str] = {}
-    if st.current_provider == "custom" and st.current_base_url:
-        try:
-            from hermes_cli.models_local import should_use_ollama_native_catalog
-            ollama_headers = _get_ollama_request_headers()
-            _, configured_ollama_base = _ollama_configured_base()
-            # Provider-level Ollama headers only belong to the configured native root; without
-            # one there is no safe origin for them.
-            if not configured_ollama_base or not _same_ollama_native_root(st.current_base_url, configured_ollama_base):
-                ollama_headers = {}
-                st.suppress_ollama_headers = True
-            keep_current_ollama_endpoint = should_use_ollama_native_catalog(
-                st.current_provider, st.current_base_url, headers=ollama_headers)
-        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-            keep_current_ollama_endpoint = False
-    if keep_current_ollama_endpoint:
-        st.api_key = st.current_api_key or "no-key-required"
-        st.base_url = st.current_base_url
-        st.api_mode = determine_api_mode(st.current_provider, st.base_url)
-        st.validation_headers = ollama_headers
-    else:
-        try:
-            st.resolve_runtime(requested=st.current_provider)
-        except Exception:
-            pass
-        # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
-        # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
-        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
-        # key/endpoint rotation is not pinned to a stale session.
-        if (
-            st.current_provider in {"custom", "local"} and st.current_base_url
-            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
-            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
-        ):
+    """Resolve the current account, preserving a session-only custom endpoint."""
+    try:
+        st.resolve_runtime(requested=st.current_provider)
+    except Exception:
+        if st.current_provider == "custom" and st.current_base_url:
             st.base_url, st.api_key = st.current_base_url, st.current_api_key
-            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
+            st.api_mode = determine_api_mode("custom", st.base_url)
+        else:
+            raise
+
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1396,17 +1347,13 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
 def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     """COMMON PATH part 2: normalize the model name for the target provider, validate it, and
     accept config-declared models the remote catalog lacks."""
-    from hermes_cli.models_local import _get_ollama_request_headers
     from hermes_cli.models_validate import validate_requested_model
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
     st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
 
-    if st.target_provider.strip().lower() == "ollama":
-        headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())
-    else:
-        headers = st.validation_headers or (
-            _extra_headers_from_config(st.user_providers.get(st.target_provider))
-            if st.user_providers and st.target_provider in st.user_providers else None)
+    headers = st.validation_headers or (
+        _extra_headers_from_config(st.user_providers.get(st.target_provider))
+        if st.user_providers and st.target_provider in st.user_providers else None)
     # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
     # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
     # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
@@ -1440,17 +1387,6 @@ def _copilot_api_mode(provider: str, model: str, api_key: str) -> str:
     return copilot_model_api_mode(model, api_key=api_key)
 
 
-def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
-    # Re-derive api_mode from the effective model rather than the persisted api_mode: the opencode providers
-    # serve both anthropic_messages and chat_completions models, so the previous session's mode must not
-    # leak across /model switches. Refs #16878.
-    # opencode-zen/go must always re-derive api_mode from the target model (not the stale persisted
-    # api_mode), because the same provider serves both anthropic_messages (e.g. minimax-m2.7) and
-    # chat_completions (e.g. deepseek-v4-flash) and switching models via /model would otherwise carry the
-    # previous mode forward, stripping /v1 from base_url for chat_completions models and 404'ing. Refs
-    # #16878.
-    from hermes_cli.models import opencode_model_api_mode
-    return opencode_model_api_mode(provider, model)
 
 
 def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
@@ -1465,7 +1401,6 @@ def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
 # (the key sets are disjoint, so exactly one — or none — fires).
 _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("copilot", "github-copilot"), _copilot_api_mode),
-    **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode),
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
@@ -1476,13 +1411,6 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         st.api_mode = override(st.target_provider, st.new_model, st.api_key)
     if not st.api_mode:
         st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
-
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models but the Anthropic SDK prepends
-    # its own /v1/messages: strip for anthropic_messages, re-append for
-    # chat_completions/codex_responses (mirrors resolve_runtime_provider).
-    from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
-    if opencode_provider_family(st.target_provider) is not None and isinstance(st.base_url, str):
-        st.base_url = normalize_opencode_base_url(st.target_provider, st.api_mode, st.base_url)
 
     capabilities = get_model_capabilities(st.target_provider, st.new_model, allow_network=True)
     from agent.native_compaction import resolve_native_compaction_capabilities
@@ -1522,6 +1450,13 @@ def switch_model(
     step returns a failure :class:`ModelSwitchResult` to stop the chain, or ``None`` to continue.
     ``user_providers`` / ``custom_providers`` are the config.yaml ``providers:`` dict and
     ``custom_providers:`` list."""
+    from hermes_cli.provider_policy import require_supported_provider, UnsupportedProviderError
+    candidate = explicit_provider or current_provider
+    try:
+        definition = resolve_provider_full(candidate, user_providers, custom_providers)
+        require_supported_provider(definition.id if definition is not None else candidate)
+    except UnsupportedProviderError as exc:
+        return ModelSwitchResult(success=False, is_global=is_global, error_message=str(exc))
     st = _Switch(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,

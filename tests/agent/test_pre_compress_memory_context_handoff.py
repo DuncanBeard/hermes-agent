@@ -10,9 +10,9 @@ def _make_agent(memory_manager, compressor):
 
     agent = AIAgent(
         api_key="test-key",
-        provider="openrouter",
+        provider="custom",
         api_mode="chat_completions",
-        base_url="https://openrouter.ai/api/v1",
+        base_url="https://example.invalid/v1",
         model="test/model",
         quiet_mode=True,
         session_db=None,

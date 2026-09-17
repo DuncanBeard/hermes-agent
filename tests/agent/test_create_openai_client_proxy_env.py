@@ -21,8 +21,8 @@ from run_agent import AIAgent
 def _make_agent():
     return AIAgent(
         api_key="test-key",
-        base_url="https://chatgpt.com/backend-api/codex",
-        provider="openai-codex",
+        base_url="https://example.invalid/v1",
+        provider="custom",
         model="gpt-5.4",
         quiet_mode=True,
         skip_context_files=True,
@@ -77,7 +77,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     agent = _make_agent()
     kwargs = {
         "api_key": "test-key",
-        "base_url": "https://chatgpt.com/backend-api/codex",
+        "base_url": "https://example.invalid/v1",
     }
     agent._create_openai_client(kwargs, reason="test", shared=False)
 
@@ -112,7 +112,7 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     agent = _make_agent()
     kwargs = {
         "api_key": "test-key",
-        "base_url": "https://chatgpt.com/backend-api/codex",
+        "base_url": "https://example.invalid/v1",
     }
     agent._create_openai_client(kwargs, reason="test", shared=False)
 

@@ -89,7 +89,8 @@ def test_runtime_pool_key_resolves_all_custom_runtime_identities():
         )
     ]
     with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
-        assert resolve_runtime_pool_key("custom", endpoint) == "sibling-provider"
+        # A URL shared by two identities is insufficient to choose credentials.
+        assert resolve_runtime_pool_key("custom", endpoint) == "custom"
         assert (
             resolve_runtime_pool_key("gemini-no-filter", endpoint)
             == "gemini-no-filter"
@@ -211,25 +212,27 @@ def test_runtime_ignores_pool_loaded_for_different_provider(monkeypatch):
         select=lambda: entry,
     )
     monkeypatch.setattr(rp, "load_pool", lambda _provider: pool)
-    monkeypatch.setattr(rp, "resolve_provider", lambda *_a, **_kw: "deepseek")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *_a, **_kw: "copilot")
     monkeypatch.setattr(
         rp,
         "_get_model_config",
-        lambda: {"provider": "deepseek", "default": "deepseek-chat"},
+        lambda **_kw: {"provider": "copilot", "default": "gpt-4o"},
     )
     monkeypatch.setattr(
         rp,
         "resolve_api_key_provider_credentials",
         lambda _provider: {
-            "provider": "deepseek",
-            "api_key": "deepseek-key",
-            "base_url": "https://api.deepseek.com/v1",
+            "provider": "copilot",
+            "api_key": "copilot-key",
+            "base_url": "https://api.githubcopilot.com",
             "source": "env",
         },
     )
 
-    resolved = rp.resolve_runtime_provider(requested="deepseek")
+    monkeypatch.setattr(rp, "_copilot_runtime_api_mode", lambda *_a, **_kw: "chat_completions")
 
-    assert resolved["provider"] == "deepseek"
-    assert resolved["api_key"] == "deepseek-key"
-    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+    resolved = rp.resolve_runtime_provider(requested="copilot")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_key"] == "copilot-key"
+    assert resolved["base_url"] == "https://api.githubcopilot.com"

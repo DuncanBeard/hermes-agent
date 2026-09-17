@@ -1,18 +1,11 @@
 import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
-import { Check, ChevronRight, Terminal } from '@/lib/icons'
+import { Check, ChevronRight } from '@/lib/icons'
 import type { OAuthProvider } from '@/types/hermes'
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
-  'openai-codex': { order: 1, title: 'ChatGPT or Codex Subscription' },
-  'minimax-oauth': { order: 2, title: 'MiniMax' },
-  'qwen-oauth': { order: 3, title: 'Qwen Code' },
-  'xai-oauth': { order: 4, title: 'xAI Grok' },
-  // Both Anthropic entries sit at the bottom: the API-key path first, then
-  // the subscription OAuth path (only works with extra usage credits).
-  anthropic: { order: 5, title: 'Anthropic API Key' },
-  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
+  copilot: { order: 1, title: 'GitHub Copilot' }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
@@ -92,7 +85,7 @@ function ConnectedTag() {
 const PROVIDER_ROW_CLASS =
   'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)'
 
-/** Quick-key row for API-key providers (Fireworks leads the expanded list after Nous, OpenRouter further down). */
+/** Shared endpoint setup row. */
 export function KeyProviderRow({ onClick, pitch, title }: { onClick: () => void; pitch: string; title: string }) {
   return (
     <RowButton className={PROVIDER_ROW_CLASS} onClick={onClick}>
@@ -105,12 +98,6 @@ export function KeyProviderRow({ onClick, pitch, title }: { onClick: () => void;
   )
 }
 
-export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
-  const { t } = useI18n()
-
-  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.fireworksPitch} title="Fireworks AI" />
-}
-
 /** Onboarding row for the managed local runtime: no account, no key — the
  *  destination is the Local Models pane where install/download live. */
 export function LocalModelsProviderRow({ onClick }: { onClick: () => void }) {
@@ -119,12 +106,6 @@ export function LocalModelsProviderRow({ onClick }: { onClick: () => void }) {
   return (
     <KeyProviderRow onClick={onClick} pitch={t.onboarding.localModelsPitch} title={t.onboarding.localModelsTitle} />
   )
-}
-
-export function OpenRouterProviderRow({ onClick }: { onClick: () => void }) {
-  const { t } = useI18n()
-
-  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.openRouterPitch} title="OpenRouter" />
 }
 
 export function ProviderRow({
@@ -137,7 +118,6 @@ export function ProviderRow({
   const { t } = useI18n()
   const freeTier = provider.status?.free_tier === true
   const loggedIn = provider.status?.logged_in && !freeTier
-  const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
     <RowButton className={PROVIDER_ROW_CLASS} onClick={() => onSelect(provider)}>
@@ -150,7 +130,7 @@ export function ProviderRow({
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
       </div>
-      <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </RowButton>
   )
 }

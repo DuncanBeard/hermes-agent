@@ -641,14 +641,6 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     return None
 
 
-def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
-    # Local MoA streaming adapter-shape bugs are not a provider outage; falling
-    # back would silently replace the MoA route with a single model (#55933).
-    if c.provider_slug == "moa" and any(s in str(c.error) for s in _MOA_ADAPTER_SHAPE_BUGS):
-        return _v(_R.format_error, retryable=False)
-    # Persisted MoA preset name that was renamed/deleted — deterministic config error.
-    from agent.errors import MoAPresetNotFoundError
-    return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
@@ -717,7 +709,7 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _provider_special_cases, _by_status,
     _by_error_code, _by_message, _by_transport,
 )
 

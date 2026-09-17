@@ -22,8 +22,8 @@ def test_gateway_checkpoint_config_reaches_real_agent(tmp_path, monkeypatch):
     agent = AIAgent(
         model="anthropic/claude-sonnet-4",
         api_key="test",
-        base_url="https://openrouter.ai/api/v1",
-        provider="openrouter",
+        base_url="https://example.invalid/v1",
+        provider="custom",
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,

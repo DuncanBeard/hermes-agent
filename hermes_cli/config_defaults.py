@@ -649,23 +649,6 @@ DEFAULT_CONFIG = {
     # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
     # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
     # openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
-    "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
-        "region": "",  # empty = AWS_REGION env var → us-east-1
-        "discovery": {
-            "enabled": True,           # auto-discover models via ListFoundationModels
-            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
-            "refresh_interval": 3600,  # cache discovery results (seconds)
-        },
-        # Bedrock Guardrails: create one in the console, then set ID and version.
-        # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
-        "guardrail": {
-            "guardrail_identifier": "",  # e.g. "abc123def456"
-            "guardrail_version": "",     # e.g. "1" or "DRAFT"
-            "stream_processing_mode": "async",  # "sync" | "async"
-            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
-        },
-    },
     # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
     # empty model = provider's default aux model; all tasks fall back to
     # openrouter:google/gemini-3-flash-preview when the configured provider is unavailable.
@@ -1316,33 +1299,6 @@ DEFAULT_CONFIG = {
     # Mixture of Agents — named presets used by /moa. A preset is an execution mode around the main
     # model, not a model itself: references + aggregator synthesize private guidance before each
     # main-model iteration.
-    "moa": {
-        "default_preset": "default",
-        "active_preset": "",
-        # Write each MoA turn (reference + aggregator exact input/output/usage) as JSONL to
-        # <hermes_home>/moa-traces/<session_id>.jsonl (or trace_dir) for auditing.
-        "save_traces": False,
-        "trace_dir": "",
-        # PII/credential redaction of advisor outputs: "" off | "display" (UI reference blocks +
-        # traces only; aggregator sees raw) | "full" (also the aggregator prompt).
-        # Advisors can echo PII from the conversation (emails, formatted phone numbers) and credential
-        # shapes into reference blocks, traces, and the aggregator prompt. Modes ('' = off, the default):
-        # "display" — redact user-visible surfaces only (reference blocks shown in the UI + saved MoA trace
-        # records); the aggregator still sees raw advisor text. "full"    — additionally redact the advisor
-        # text injected into the aggregator prompt (issue #59959).
-        "privacy_filter": "",
-        "presets": {
-            "default": {
-                "reference_models": [
-                    {"provider": "openai-codex", "model": "gpt-5.5"},
-                    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
-                ],
-                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-
-                "enabled": True,
-            }
-        },
-    },
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
@@ -2421,13 +2377,6 @@ DEFAULT_CONFIG = {
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
     # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
-    "vertex": {
-        # GCP project ID. Empty → project_id from the service-account JSON (or ADC).
-        "project_id": "",
-        # "global" is required for Gemini 3.x preview models (regional endpoints silently 404); use
-        # e.g. "us-central1" only if your models are region-pinned.
-        "region": "global",
-    },
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
     # llama-server in router mode. No context/VRAM knobs by design.
     "local_runtime": {
@@ -2498,109 +2447,14 @@ OPTIONAL_ENV_VARS = {
         "integration phase (not needed once the gate is removed)",
         "Nous free-tier shared secret (leave empty unless given one)", password=True,
         category="provider", advanced=True),
-    "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
-        "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
-        category="provider", advanced=True),
-    "GOOGLE_API_KEY": _prov("Google AI Studio API key (also recognized as GEMINI_API_KEY)",
-        "Google AI Studio API key", "https://aistudio.google.com/app/apikey"),
-    "GEMINI_API_KEY": _prov("Google AI Studio API key (alias for GOOGLE_API_KEY)", "Gemini API key",
-        "https://aistudio.google.com/app/apikey"),
-    "GEMINI_BASE_URL": _base_url("Google AI Studio", "Gemini"),
-    "VERTEX_CREDENTIALS_PATH": _prov(
-        "Path to a Google Cloud service account JSON for Vertex AI (Gemini). Vertex uses "
-        "OAuth2, not a static API key — this points at the credentials Hermes mints short-lived "
-        "tokens from. Falls back to GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
-        "application-default login). Set project/region under vertex: in config.yaml.",
-        "Vertex service account JSON path (leave empty to use ADC / "
-        "GOOGLE_APPLICATION_CREDENTIALS)", "https://cloud.google.com/iam/docs/keys-create-delete",
-        password=False),
-    "XAI_API_KEY": _prov("xAI API key", "xAI API key", "https://console.x.ai/"),
-    "XAI_BASE_URL": _base_url("xAI"),
-    "NVIDIA_API_KEY": _prov("NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
-        "NVIDIA NIM API key", "https://build.nvidia.com/"),
-    "NVIDIA_BASE_URL": _prov(
-        "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
-        "NVIDIA NIM base URL (leave empty for default)", None, password=False),
-    "LM_API_KEY": _prov("LM Studio bearer token for auth-enabled local servers",
-        "LM Studio API key / bearer token", None),
-    "LM_BASE_URL": _base_url("LM Studio"),
-    "GLM_API_KEY": _prov("Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
-        "Z.AI / GLM API key", "https://z.ai/"),
-    "ZAI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
-    "Z_AI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
-    "GLM_BASE_URL": _base_url("Z.AI / GLM"),
-    "KIMI_API_KEY": _prov("Kimi / Moonshot API key", "Kimi API key",
-        "https://platform.moonshot.cn/"),
-    "KIMI_BASE_URL": _base_url("Kimi / Moonshot", "Kimi"),
-    "KIMI_CN_API_KEY": _prov("Kimi / Moonshot China API key", "Kimi (China) API key",
-        "https://platform.moonshot.cn/"),
-    "STEPFUN_API_KEY": _prov("StepFun Step Plan API key", "StepFun Step Plan API key",
-        "https://platform.stepfun.com/"),
-    "STEPFUN_BASE_URL": _base_url("StepFun Step Plan"),
-    "ARCEEAI_API_KEY": _prov("Arcee AI API key", "Arcee AI API key", "https://chat.arcee.ai/"),
-    "ARCEE_BASE_URL": _base_url("Arcee AI", "Arcee"),
-    "GMI_API_KEY": _prov("GMI Cloud API key", "GMI Cloud API key", "https://www.gmicloud.ai/"),
-    "GMI_BASE_URL": _base_url("GMI Cloud"),
-    "ACTUAL_API_KEY": _prov("Actual Computer inference key (ac_...)",
-        "Actual Computer inference key", "https://actual.inc/user/keys"),
-    "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
-        "https://app.fireworks.ai/settings/users/api-keys"),
-    "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",
-        "https://www.minimax.io/"),
-    "MINIMAX_BASE_URL": _base_url("MiniMax"),
-    "MINIMAX_CN_API_KEY": _prov("MiniMax API key (China endpoint)", "MiniMax (China) API key",
-        "https://www.minimaxi.com/"),
-    "MINIMAX_CN_BASE_URL": _base_url("MiniMax (China)"),
-    "DEEPSEEK_API_KEY": _prov("DeepSeek API key for direct DeepSeek access", "DeepSeek API Key",
-        "https://platform.deepseek.com/api_keys", advanced=False),
-    "DEEPSEEK_BASE_URL": _prov("Custom DeepSeek API base URL (advanced)", "DeepSeek Base URL", "",
-        password=False, advanced=False),
-    "DASHSCOPE_API_KEY": _prov("Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
-        "DashScope API Key", "https://modelstudio.console.alibabacloud.com/", advanced=False),
-    "DASHSCOPE_BASE_URL": _prov(
-        "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
-        "DashScope Base URL", "", password=False),
-    "HERMES_QWEN_BASE_URL": _prov(
-        "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
-        "Qwen Portal base URL (leave empty for default)", None, password=False),
-    "OPENCODE_ZEN_API_KEY": _prov("OpenCode Zen API key (pay-as-you-go access to curated models)",
-        "OpenCode Zen API key", "https://opencode.ai/auth"),
-    "COMMANDCODE_API_KEY": _prov(
-        "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
-        "CommandCode API key", "https://commandcode.ai/studio/"),
-    "OPENCODE_ZEN_BASE_URL": _base_url("OpenCode Zen"),
-    "OPENCODE_GO_API_KEY": _prov("OpenCode Go API key ($10/month subscription for open models)",
-        "OpenCode Go API key", "https://opencode.ai/auth"),
-    "OPENCODE_GO_BASE_URL": _base_url("OpenCode Go"),
-    "HF_TOKEN": _prov(
-        "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
-        "Hugging Face Token", "https://huggingface.co/settings/tokens", advanced=False),
-    "HF_BASE_URL": _base_url("Hugging Face Inference Providers", "HF"),
-    "OLLAMA_API_KEY": _prov("Ollama Cloud API key (ollama.com — cloud-hosted open models)",
-        "Ollama Cloud API key", "https://ollama.com/settings"),
-    "OLLAMA_BASE_URL": _prov("Ollama Cloud base URL override (default: https://ollama.com/v1)",
-        "Ollama base URL (leave empty for default)", None, password=False),
-    "XIAOMI_API_KEY": _prov(
-        "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, "
-        "mimo-v2-omni, mimo-v2-flash)", "Xiaomi MiMo API Key", "https://platform.xiaomimimo.com",
-        advanced=False),
-    "XIAOMI_BASE_URL": _prov(
-        "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
-        "Xiaomi base URL (leave empty for default)", None, password=False),
-    "UPSTAGE_API_KEY": _prov("Upstage API key for Solar LLM models", "Upstage API Key",
-        "https://console.upstage.ai/api-keys", advanced=False),
-    "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
-        "Upstage base URL (leave empty for default)", None, password=False),
-    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        password=False),
-    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "AWS Profile", None, password=False),
-    "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
-        "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
-    "AZURE_FOUNDRY_BASE_URL": _prov(
-        "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
-        "Azure Foundry base URL", None, password=False),
+    # Service-only keys: these do not select or authenticate a model provider.
+    "OPENROUTER_API_KEY": _tool("OpenRouter service API key", "OpenRouter service API key", "https://openrouter.ai/keys"),
+    "GOOGLE_API_KEY": _tool("Google media service API key", "Google API key", "https://aistudio.google.com/app/apikey"),
+    "GEMINI_API_KEY": _tool("Google media service API key (alias)", "Gemini API key", "https://aistudio.google.com/app/apikey"),
+    "XAI_API_KEY": _tool("xAI speech service API key", "xAI API key", "https://console.x.ai/"),
+    "MINIMAX_API_KEY": _tool("MiniMax speech service API key", "MiniMax API key", "https://www.minimax.io/"),
+    "MINIMAX_CN_API_KEY": _tool("MiniMax China speech service API key", "MiniMax China API key", "https://www.minimaxi.com/"),
+    "HF_TOKEN": _tool("Hugging Face model download token", "Hugging Face token", "https://huggingface.co/settings/tokens"),
     # ── Tool API keys ──
     "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
         "https://exa.ai/", tools=["web_search", "web_extract"]),

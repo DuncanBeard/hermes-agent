@@ -87,6 +87,6 @@ def test_keepalive_thread_starts_when_an_agent_routes_to_nous(monkeypatch, tmp_p
     AIAgent(api_key="k", base_url="https://inference-api.nousresearch.com/v1", provider="nous",
             model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     assert started == [1]
-    AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", provider="openrouter",
+    AIAgent(api_key="k", base_url="https://custom.example.test/v1", provider="custom",
             model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     assert started == [1]

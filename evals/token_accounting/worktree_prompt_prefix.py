@@ -130,7 +130,7 @@ else:
     agent = AIAgent(
         api_key="offline-not-a-credential",
         base_url="http://127.0.0.1:9/v1",
-        provider="openai-compat",
+        provider="custom",
         model="offline-probe",
         enabled_toolsets=["terminal", "file"],
         quiet_mode=True,

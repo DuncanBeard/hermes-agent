@@ -9,6 +9,8 @@ Hermes uses two kinds of model slots:
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
 - **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
+This fork permits only direct Copilot, Nous, and generic/named custom inference routes for both kinds of slot. A retired explicit provider is an error, not an automatic replacement. Tool and memory providers remain separate.
+
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](/user-guide/local-models).
 
 :::tip Fastest path: Nous Portal
@@ -40,8 +42,8 @@ Click **Change** on the Main model row:
 
 The picker has two columns:
 
-- **Left** — authenticated providers. Only providers you've set up (API key set, OAuth'd, or defined as a custom endpoint) show up here. If a provider is missing, head to **Keys** and add its credential.
-- **Right** — the curated model list for the selected provider. These are the agentic models Hermes recommends for that provider, not the raw `/models` dump (which on OpenRouter includes 400+ models including TTS, image generators, and rerankers).
+- **Left** — supported providers you have configured: Copilot, Nous, and custom endpoints. Use `hermes model` to authenticate or configure an endpoint; adding a retired vendor key does not enable inference.
+- **Right** — models offered by the selected supported route. The model family does not change the provider identity: Claude and Gemini on Copilot remain Copilot models.
 
 Type in the filter box to narrow by provider name, slug, or model ID.
 
@@ -131,18 +133,18 @@ When you save via the dashboard, Hermes writes to `~/.hermes/config.yaml`:
 **Main model:**
 ```yaml
 model:
-  provider: openrouter
-  default: anthropic/claude-opus-4.7
+  provider: copilot
+  default: gpt-5.4
   base_url: ''        # cleared on provider switch
-  api_mode: chat_completions
+  api_mode: codex_responses
 ```
 
-**Auxiliary override (example — vision on gemini-flash):**
+**Auxiliary override (replace the model placeholder with a vision-capable Copilot model):**
 ```yaml
 auxiliary:
   vision:
-    provider: openrouter
-    model: google/gemini-2.5-flash
+    provider: copilot
+    model: YOUR_COPILOT_VISION_MODEL_ID
     base_url: ''
     api_key: ''
     timeout: 120
@@ -170,8 +172,8 @@ auxiliary:
     provider: auto
     model: ''
     fallback_chain:
-      - provider: openrouter
-        model: inclusionai/ring-2.6-1t:free
+      - provider: nous
+        model: YOUR_NOUS_MODEL_ID
 ```
 
 When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain. If that is also absent and the main provider cannot serve the call, the task is skipped with a warning — Hermes does not fall through to other logged-in providers.
@@ -192,7 +194,7 @@ providers:
       CF-Access-Client-Secret: "yyyy"
 ```
 
-Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes; the `anthropic_messages` and `bedrock_converse` API modes do not use it.
+Header values routinely carry credentials — Hermes never logs them. Check header support for your custom transport; do not assume vendor-specific headers apply to every protocol.
 
 **`discover_models`** — set to `false` (default `true`) to skip querying the endpoint's `/models` listing and use only the `models` you configured on the entry. Handy for gateways whose model listing is slow, unreliable, or noisy:
 
@@ -282,11 +284,11 @@ Three things to check:
 
 1. **Did you start a new session?** Existing chats don't re-read config.
 2. **Is `provider` set to something other than `auto`?** If the field shows `auto`, the task is still using your main model. Click **Change** and pick a real provider.
-3. **Is the provider authenticated?** If you assigned `minimax` to a task but don't have a MiniMax API key, that task falls back to the openrouter default and logs a warning in `agent.log`.
+3. **Is the route supported and configured?** Authenticate Copilot/Nous or configure the custom endpoint. A retired explicit provider is rejected; Hermes must not guess a replacement based on unrelated tool credentials.
 
 ### I picked a model but Hermes switched providers on me
 
-On OpenRouter (or any aggregator), bare model names resolve *within* the aggregator first. So `claude-sonnet-4` on OpenRouter becomes `anthropic/claude-sonnet-4.6`, staying on your OpenRouter auth. But if you typed `claude-sonnet-4` on a native Anthropic auth, it would stay as `claude-sonnet-4-6`. If you see an unexpected provider switch, check that your current provider is what you expect — the picker always shows the current main at the top of the dialog.
+Check the active provider and use an exact model ID from its catalog. Claude and Gemini names do not imply native vendor authentication. Review aliases and declared fallbacks if a different route is selected.
 
 ## Alternative methods
 
@@ -295,8 +297,8 @@ On OpenRouter (or any aggregator), bare model names resolve *within* the aggrega
 Inside any `hermes chat` session:
 
 ```
-/model gpt-5.4 --provider openrouter             # session-only
-/model gpt-5.4 --provider openrouter --global    # also persists to config.yaml
+/model gpt-5.4 --provider copilot             # session-only
+/model gpt-5.4 --provider copilot --global    # also persists to config.yaml
 /model claude-opus-4.6 --once                    # next turn only, then auto-restores
 ```
 
@@ -318,11 +320,12 @@ Define your own short names for models you reach for often, then use `/model <al
 # ~/.hermes/config.yaml
 model_aliases:
   fav:
-    model: claude-sonnet-4.6
-    provider: anthropic
-  grok:
-    model: grok-4
-    provider: x-ai
+    model: gpt-5.4
+    provider: copilot
+  local:
+    model: YOUR_LOCAL_MODEL_ID
+    provider: custom
+    base_url: http://localhost:8000/v1
 ```
 
 An alias that points at its own endpoint can also carry that endpoint's
@@ -339,17 +342,12 @@ model_aliases:
     key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
 ```
 
-When an alias sets neither, the key is resolved from the alias **host** —
-`OLLAMA_API_KEY` for an `ollama.com` endpoint, `DEEPSEEK_API_KEY` for
-`api.deepseek.com`, and so on. It is never inherited from whichever provider
-happened to be active before the switch, so switching to an alias cannot send
-one provider's secret to another provider's host.
+Use explicit endpoint-scoped credential references for authenticated custom aliases. Credentials must never be inherited from whichever provider happened to be active before the switch.
 
 **Short string form (`model.aliases.<name>: provider/model`)** — convenient from the shell because `hermes config set` writes scalars and now also parses inline list/mapping literals, though this short alias form still can't carry a custom `base_url`:
 
 ```bash
-hermes config set model.aliases.fav anthropic/claude-opus-4.6
-hermes config set model.aliases.grok x-ai/grok-4
+hermes config set model.aliases.fav copilot/gpt-5.4
 ```
 
 > `hermes config set` also accepts inline **list/mapping literals** (JSON/YAML flow style). Quote them so your shell passes them through intact:
@@ -361,7 +359,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 
 Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
 
-Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/reference/slash-commands#custom-model-aliases) for the full reference.
+Then `/model fav` or `/model local` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/reference/slash-commands#custom-model-aliases) for the full reference.
 
 ### `hermes model` subcommand
 
@@ -371,7 +369,7 @@ hermes model            # Interactive provider + model picker (the canonical way
 
 `hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.default` in `~/.hermes/config.yaml`. After a new model is saved, a reasoning-effort step follows (`minimal` … `ultra`, **Disable reasoning**, or **Skip** to keep the current value) and writes `agent.reasoning_effort`; the step is skipped for models the catalog marks as having no reasoning control. The provider list also has a **Reasoning effort for the current model...** row to change only the effort.
 
-**Configure auxiliary models...** opens the per-task side-model picker (vision, compression, approval, delegation, …). Each task's provider → model pick ends with the same effort step, stored as `auxiliary.<task>.reasoning_effort` (or `delegation.reasoning_effort`), with an extra **Provider default** row that leaves the level up to the provider. Tasks whose block has no `reasoning_effort` key by design (MoA slots, memory query rewrite) skip the step.
+**Configure auxiliary models...** opens the per-task side-model picker (vision, compression, approval, delegation, …). Each task's provider → model pick ends with the same effort step, stored as `auxiliary.<task>.reasoning_effort` (or `delegation.reasoning_effort`), with an extra **Provider default** row that leaves the level up to the provider. Tasks whose block has no `reasoning_effort` key by design (for example, memory query rewrite) skip the step.
 
 To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model --json` and `hermes status`.
 
@@ -392,17 +390,17 @@ curl -H "X-Hermes-Session-Token: $TOKEN" http://localhost:PORT/api/model/auxilia
 
 # Set the main model
 curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
-  -d '{"scope":"main","provider":"openrouter","model":"anthropic/claude-opus-4.7"}' \
+  -d '{"scope":"main","provider":"copilot","model":"gpt-5.4"}' \
   http://localhost:PORT/api/model/set
 
 # Override a single auxiliary task
 curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
-  -d '{"scope":"auxiliary","task":"vision","provider":"openrouter","model":"google/gemini-2.5-flash"}' \
+  -d '{"scope":"auxiliary","task":"vision","provider":"copilot","model":"YOUR_COPILOT_VISION_MODEL_ID"}' \
   http://localhost:PORT/api/model/set
 
 # Assign one model to every auxiliary task
 curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
-  -d '{"scope":"auxiliary","task":"","provider":"openrouter","model":"google/gemini-2.5-flash"}' \
+  -d '{"scope":"auxiliary","task":"","provider":"copilot","model":"YOUR_COPILOT_VISION_MODEL_ID"}' \
   http://localhost:PORT/api/model/set
 
 # Reset all auxiliary tasks to auto

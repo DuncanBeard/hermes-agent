@@ -447,26 +447,14 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
     )
 
     assert result.success is True
-    assert seen_headers == [{}]
+    assert seen_headers == []  # No retired Ollama discovery path is consulted.
     assert validation_headers == [None]
 
 
 
-def test_is_routing_aggregator_excludes_flat_namespace_resellers():
-    """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch
-    relies on it to search their flat bare-name catalog), but they are NOT
-    routing aggregators — their models are first-party, so the picker dedup
-    must not strip them. (#47077)"""
-    # Still aggregators for model-switch flat-catalog resolution.
-    assert providers_mod.is_aggregator("opencode-go") is True
-    assert providers_mod.is_aggregator("opencode-zen") is True
-    # But NOT routing aggregators for picker-dedup purposes.
-    assert providers_mod.is_routing_aggregator("opencode-go") is False
-    assert providers_mod.is_routing_aggregator("opencode-zen") is False
-    # True routers and custom proxies remain routing aggregators.
-    assert providers_mod.is_routing_aggregator("openrouter") is True
-    assert providers_mod.is_routing_aggregator("custom:litellm") is True
-    assert providers_mod.is_routing_aggregator("not-a-provider") is False
+def test_retired_accounts_are_not_aggregators():
+    for provider in ("opencode-go", "opencode-zen", "openrouter"):
+        assert providers_mod.is_aggregator(provider) is False
 
 
 def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
@@ -1225,7 +1213,7 @@ def test_lmstudio_picker_probes_active_config_base_url(monkeypatch):
         current_model="qwen/qwen3-coder-30b",
     )
 
-    assert captured["base_url"] == "http://192.168.1.10:1234/v1"
+    assert captured == {}  # Retired local identities never invoke their native catalog.
 
 
 def test_lmstudio_picker_lm_base_url_env_wins_over_active_config(monkeypatch):
@@ -1251,7 +1239,7 @@ def test_lmstudio_picker_lm_base_url_env_wins_over_active_config(monkeypatch):
         current_base_url="http://192.168.1.10:1234/v1",
     )
 
-    assert captured["base_url"] == "http://override.local:9999/v1"
+    assert captured == {}  # Retired local identities never invoke their native catalog.
 
 
 def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
@@ -1651,35 +1639,11 @@ def test_shared_url_different_display_names_are_separate_rows(monkeypatch):
     assert by_name["Perplexity"] == ["sonar-pro"]
 
 
-def test_excluded_providers_hides_builtin_row(monkeypatch):
-    """``excluded_providers`` must hide a built-in provider row that would
-    otherwise surface when its credentials are present."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+def test_retired_account_never_appears_with_ambient_service_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-
-    baseline = list_authenticated_providers(
-        current_provider="openrouter",
-        current_base_url="https://openrouter.ai/api/v1",
-        user_providers={},
-        custom_providers=[],
-        max_models=50,
-    )
-    assert any(p["slug"] == "openrouter" for p in baseline), (
-        "sanity: openrouter row must appear when OPENROUTER_API_KEY is set"
-    )
-
-    filtered = list_authenticated_providers(
-        current_provider="openrouter",
-        current_base_url="https://openrouter.ai/api/v1",
-        user_providers={},
-        custom_providers=[],
-        max_models=50,
-        excluded_providers=["openrouter"],
-    )
-    assert not any(p["slug"] == "openrouter" for p in filtered), (
-        "excluded_providers=['openrouter'] must hide the openrouter row"
-    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    rows = list_authenticated_providers(current_provider="openrouter", user_providers={}, custom_providers=[])
+    assert all(row["slug"] != "openrouter" for row in rows)
 
 
 def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):

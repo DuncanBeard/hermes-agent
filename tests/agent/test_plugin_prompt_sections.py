@@ -16,9 +16,9 @@ from run_agent import AIAgent
 def _real_agent(*, session_id: str = "plugin-section-test") -> AIAgent:
     return AIAgent(
         api_key="test-key",
-        base_url="https://openrouter.ai/api/v1",
+        base_url="https://example.invalid/v1",
         model="test/model",
-        provider="openrouter",
+        provider="custom",
         platform="cli",
         quiet_mode=True,
         skip_context_files=True,
@@ -110,9 +110,9 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         db.ensure_session(session_id, source="cli", model="test/model")
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
+            base_url="https://example.invalid/v1",
             model="test/model",
-            provider="openrouter",
+            provider="custom",
             platform="cli",
             quiet_mode=True,
             skip_context_files=True,

@@ -51,21 +51,19 @@ thread.start()
 url = f"http://127.0.0.1:{server.server_port}"
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(parents=True, exist_ok=True)
-config = {"model": {"default": "fixture", "provider": "fixture-local", "max_tokens": 17}, "providers": {"fixture-local": {"api": url + "/v1", "api_key": "fixture", "max_output_tokens": 19}}}
+config = {"model": {"default": "fixture", "provider": "custom:fixture-local", "max_tokens": 17}, "providers": {"fixture-local": {"api": url + "/v1", "api_key": "fixture", "max_output_tokens": 19}}}
 (home / "config.yaml").write_text(json.dumps(config))
 os.environ["HERMES_MAX_TOKENS"] = "13"
 from gateway.run import _resolve_runtime_agent_kwargs
 from gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
 from hermes_cli.runtime_provider import resolve_runtime_provider
-from hermes_cli.moa_config import _normalize_preset
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.anthropic import AnthropicTransport
-from agent.transports.bedrock import BedrockTransport
 
 messages = [{"role": "user", "content": "fixture"}]
 client = OpenAI(api_key="fixture", base_url=url + "/v1", max_retries=0)
 results = {}
-for label, runtime in [("gateway", _resolve_runtime_agent_kwargs()), ("api-server", _resolve_request_runtime_agent_kwargs("fixture-local", "fixture")), ("provider", resolve_runtime_provider(requested="fixture-local", target_model="fixture"))]:
+for label, runtime in [("gateway", _resolve_runtime_agent_kwargs()), ("api-server", _resolve_request_runtime_agent_kwargs("custom:fixture-local", "fixture")), ("provider", resolve_runtime_provider(requested="custom:fixture-local", target_model="fixture"))]:
     cap = runtime.get("max_tokens", runtime.get("max_output_tokens"))
     kwargs = ChatCompletionsTransport().build_kwargs("fixture", messages, max_tokens=cap, max_tokens_param_fn=lambda value: {"max_tokens": value})
     client.chat.completions.create(**kwargs)
@@ -90,7 +88,7 @@ compression_cap, _ = _compression_fast_lane_controls(
     "compression", actual_provider="custom", actual_model="fixture", requested_provider="custom",
     requested_model="fixture", route_config=route, leak_guard_config=route, max_tokens=None, extra_body={},
 )
-child_credentials = _resolve_delegation_credentials({"provider": "fixture-local", "model": "fixture"}, agent)
+child_credentials = _resolve_delegation_credentials({"provider": "custom:fixture-local", "model": "fixture"}, agent)
 for label, cap in [("compression-config-helper", compression_cap), ("delegation-config-helper", child_credentials.get("max_output_tokens"))]:
     kwargs = ChatCompletionsTransport().build_kwargs("fixture", messages, max_tokens=cap, max_tokens_param_fn=lambda value: {"max_tokens": value})
     client.chat.completions.create(**kwargs)
@@ -99,8 +97,6 @@ kwargs = AnthropicTransport().build_kwargs("claude-sonnet-4-5", messages)
 kwargs.pop("__anthropic__", None)
 Anthropic(api_key="fixture", base_url=url, max_retries=0).messages.create(**kwargs)
 results["native-anthropic"] = captures[-1]
-results["bedrock-converse-built-not-sent"] = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", messages)
-results["moa-normalized"] = _normalize_preset({"max_tokens": 23, "reference_max_tokens": 29})
 if os.environ.get("FULL_OUTPUT_CAP_SURFACES"):
     from output_caps_surfaces import exercise_surfaces
     results.update(exercise_surfaces(agent, captures, url, home, config))
@@ -113,4 +109,3 @@ if os.environ.get("VERIFY_OUTPUT_CAP_REMOVAL"):
         assert "max_tokens" not in results[label]["body"], label
     assert results["internal-budget"]["body"]["max_tokens"] == 43
     assert results["native-anthropic"]["body"]["max_tokens"] > 0
-    assert "maxTokens" not in results["bedrock-converse-built-not-sent"].get("inferenceConfig", {})

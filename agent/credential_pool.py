@@ -37,8 +37,6 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _load_provider_state_with_source,
-    _resolve_kimi_base_url,
-    _resolve_zai_base_url,
     _same_path,
     _save_auth_store,
     _save_provider_state,
@@ -428,7 +426,16 @@ def _iter_custom_providers(config: Optional[dict] = None):
     try:
         from hermes_cli.config import get_compatible_custom_providers
 
-        custom_providers = get_compatible_custom_providers(config)
+        from hermes_cli.config_providers import providers_dict_to_custom_providers
+
+        # The UI-compatible view deduplicates by label/URL, which is not a
+        # credential identity: retain every durable providers.<key> mapping.
+        keyed = providers_dict_to_custom_providers(config.get("providers"))
+        custom_providers = keyed + [entry for entry in get_compatible_custom_providers(config)
+                                    if not entry.get("provider_key") and not any(
+                                        entry.get("name") == item.get("name")
+                                        and _norm_url(entry.get("base_url")) == _norm_url(item.get("base_url"))
+                                        for item in keyed)]
     except Exception:
         return
     for entry in custom_providers or ():
@@ -454,13 +461,20 @@ def _requested_custom_name_aliases(provider_name: str) -> set:
     return aliases
 
 
+# These raw namespaces contain built-in/service credentials, not endpoint keys.
+_RESERVED_POOL_PROVIDERS = frozenset({"nous", "copilot", "custom", "openai-codex", "xai-oauth"})
+
+
 def _pool_keys_for_custom_entry(norm_name: str, entry: Dict[str, Any]) -> List[str]:
     """Durable ``providers.<key>`` slug first, then legacy ``custom:<name>``."""
     keys: List[str] = []
     provider_key = _normalize_custom_pool_name(str(entry.get("provider_key") or ""))
-    for key in (provider_key, f"{CUSTOM_POOL_PREFIX}{norm_name}" if norm_name else ""):
+    canonical = f"{CUSTOM_POOL_PREFIX}{provider_key}" if provider_key and provider_key not in _RESERVED_POOL_PROVIDERS else ""
+    for key in (provider_key, canonical, f"{CUSTOM_POOL_PREFIX}{norm_name}" if norm_name else ""):
         normalized = key.strip().lower()
-        if normalized and normalized not in keys:
+        if normalized.startswith(CUSTOM_POOL_PREFIX) and _get_custom_provider_config(normalized) != entry:
+            continue
+        if normalized and normalized not in _RESERVED_POOL_PROVIDERS and normalized not in keys:
             keys.append(normalized)
     return keys
 
@@ -482,16 +496,22 @@ def custom_provider_pool_key_candidates(
     normalized_url = _norm_url(base_url)
     requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
 
+    entries = list(_iter_custom_providers())
     if requested_aliases:
-        for norm_name, entry in _iter_custom_providers():
-            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
-                return _pool_keys_for_custom_entry(norm_name, entry)
-
-    for norm_name, entry in _iter_custom_providers():
-        entry_url = _norm_url(entry.get("base_url"))
-        if entry_url and entry_url == normalized_url:
-            return _pool_keys_for_custom_entry(norm_name, entry)
-    return []
+        # Durable keys outrank display labels; ambiguous labels fail closed.
+        keyed = [(name, entry) for name, entry in entries
+                 if _normalize_custom_pool_name(str(entry.get("provider_key") or "")) in requested_aliases]
+        matches = keyed or [(name, entry) for name, entry in entries
+                            if name in requested_aliases]
+    else:
+        matches = [(name, entry) for name, entry in entries
+                   if _norm_url(entry.get("base_url")) == normalized_url]
+    if len(matches) != 1:
+        return []
+    name, entry = matches[0]
+    if _norm_url(entry.get("base_url")) != normalized_url:
+        return []
+    return _pool_keys_for_custom_entry(name, entry)
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
@@ -520,7 +540,11 @@ def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):
         return None
     suffix = pool_key[len(CUSTOM_POOL_PREFIX):]
-    return next((entry for norm_name, entry in _iter_custom_providers() if norm_name == suffix), None)
+    entries = list(_iter_custom_providers())
+    keyed = [entry for _, entry in entries
+             if _normalize_custom_pool_name(str(entry.get("provider_key") or "")) == suffix]
+    matches = keyed or [entry for name, entry in entries if name == suffix]
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_pool_strategy(provider: str) -> str:
@@ -568,24 +592,9 @@ def _legacy_custom_pool_matches(
 ) -> bool:
     """Match a legacy ``custom:<name>`` pool against a named runtime identity."""
     try:
-        for normalized_name, entry in _iter_custom_providers():
-            if f"{CUSTOM_POOL_PREFIX}{normalized_name}" != pool_provider:
-                continue
-            aliases = {normalized_name}
-            for value in (entry.get("name"), entry.get("provider_key")):
-                alias = _normalize_custom_pool_name(str(value or ""))
-                if alias:
-                    aliases.add(alias)
-                    if alias.startswith(CUSTOM_POOL_PREFIX):
-                        aliases.add(alias[len(CUSTOM_POOL_PREFIX):])
-            configured_url = _norm_url(entry.get("base_url"))
-            runtime_aliases = {_normalize_custom_pool_name(provider_norm)}
-            if provider_norm.startswith(CUSTOM_POOL_PREFIX):
-                runtime_aliases.add(_normalize_custom_pool_name(provider_norm[len(CUSTOM_POOL_PREFIX):]))
-            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+        return pool_provider in custom_provider_pool_key_candidates(runtime_url, provider_norm)
     except Exception:
         return False
-    return False
 
 
 def credential_pool_matches_provider(
@@ -730,15 +739,6 @@ def _write_through_provider_state_to_global_root(
         logger.debug("%s pool refresh: write-through to global root failed: %s", provider_id, exc)
 
 
-def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
-    """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
-    if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
-        return None
-    try:
-        from agent.anthropic_credentials import _root_hermes_oauth_file
-        return _root_hermes_oauth_file()
-    except Exception:
-        return None
 
 
 def _profile_owns_pool_provider(provider: str) -> bool:
@@ -861,11 +861,11 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
 
 # Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
 # provider is returned unchanged by that path, so callers must not report a refresh for them.
-REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"nous", *_TOKENS_SINGLETON_PROVIDERS})
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
-_SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
+_SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth")
 
 _REFRESH_TIMEOUT_ENV_VARS = {
     "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
@@ -875,7 +875,6 @@ _REFRESH_TIMEOUT_ENV_VARS = {
 # Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
 # re-auth another process wrote to the provider's store.
 _RESYNC_SOURCE = {
-    "anthropic": "claude_code",
     "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
@@ -1111,35 +1110,6 @@ class CredentialPool(CredentialPoolAdminMixin):
     # ``invalid_grant``. These helpers adopt the fresher pair from wherever the
     # provider's token authority lives, clearing stale exhaustion state.
 
-    def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a claude_code entry from ~/.claude/.credentials.json if tokens differ."""
-        if self.provider != "anthropic" or entry.source != "claude_code":
-            return entry
-        try:
-            from agent.anthropic_credentials import read_claude_code_credentials
-            creds = read_claude_code_credentials()
-            if not creds:
-                return entry
-            file_refresh = creds.get("refreshToken", "")
-            file_access = creds.get("accessToken", "")
-            # Access tokens can be re-issued without a new refresh token, so
-            # checking only refresh_token leaves a stale access_token in the
-            # pool -> 401 on every request until the exhausted TTL expires.
-            if (file_access or file_refresh) and (
-                (file_access and file_access != (entry.access_token or ""))
-                or (file_refresh and file_refresh != (entry.refresh_token or ""))
-            ):
-                logger.debug("Pool entry %s: syncing tokens from credentials file (tokens changed)", entry.id)
-                return self._adopt(
-                    entry,
-                    access_token=file_access or entry.access_token,
-                    refresh_token=file_refresh or entry.refresh_token,
-                    expires_at_ms=creds.get("expiresAt", 0) or entry.expires_at_ms,
-                    **_CLEAR_STATUS,
-                )
-        except Exception as exc:
-            logger.debug("Failed to sync from credentials file: %s", exc)
-        return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
         """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
@@ -1185,7 +1155,6 @@ class CredentialPool(CredentialPoolAdminMixin):
             )
         return entry
 
-    _sync_anthropic_entry_from_pool_store = _sync_entry_from_pool_store
 
     def _sync_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex / xAI device_code entry from auth.json ``providers.<id>.tokens``.
@@ -1374,89 +1343,11 @@ class CredentialPool(CredentialPoolAdminMixin):
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)
-            if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
-                with self._claude_code_credentials_lock():
-                    synced = self._sync_anthropic_entry_from_credentials_file(synced)
-                    if synced.refresh_token != entry.refresh_token:
-                        return synced
-                    return self._refresh_entry_impl(synced, force=force)
             if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
                 return synced
             return self._refresh_entry_impl(synced, force=force)
 
-    def _claude_code_credentials_lock(self):
-        """Cross-process lock keyed to the shared claude_code credentials file.
 
-        Unlike the per-profile ``_auth_store_lock()`` this serializes every
-        profile and process that might refresh a ``claude_code`` entry.
-        """
-        from agent.anthropic_credentials import claude_code_credentials_path
-
-        return _auth_store_lock(
-            timeout_seconds=self._single_use_refresh_lock_timeout(),
-            target_path=claude_code_credentials_path(),
-        )
-
-    def _fail_closed_unpersisted_rotation(
-        self,
-        entry: PooledCredential,
-        exc: BaseException,
-        *,
-        store: str,
-    ) -> None:
-        """Quarantine an entry whose rotated pair never reached its store.
-
-        For ``claude_code`` / ``hermes_pkce`` the singleton file — not
-        auth.json — is authoritative: ``_seed_from_singletons()`` re-reads it
-        on every ``load_pool()``. When the refresh POST succeeded but the
-        singleton write failed, the replacement pair exists only in memory
-        while the consumed pair survives on disk and would be re-seeded over
-        any row we persisted; the next refresh would replay the spent token.
-        So never expose or persist the rotated pair; mark the entry terminally
-        so it surfaces as an explicit re-auth requirement.
-        """
-        logger.error(
-            "Anthropic %s refresh rotated the single-use token but could not commit it "
-            "to %s (%s) — failing closed and quarantining the credential; "
-            "re-authenticate to recover",
-            entry.source, store, exc,
-        )
-        try:
-            from agent.anthropic_credentials import (
-                mark_rotation_consumed_uncommitted,
-                spent_rotation_source_path,
-            )
-
-            # The singleton still holds the spent pair and load_pool() re-seeds
-            # it, so record the fingerprints — persisted to the shared source's
-            # sidecar registry (we hold its path-keyed lock here) so OTHER
-            # processes/profiles adopt the terminal verdict instead of leasing
-            # the stale pair or re-POSTing the spent refresh token.
-            mark_rotation_consumed_uncommitted(
-                entry.access_token,
-                entry.refresh_token,
-                source_path=spent_rotation_source_path(entry.source),
-            )
-        except Exception:  # pragma: no cover - never block the quarantine
-            logger.debug("Failed to record consumed rotation fingerprints", exc_info=True)
-        self._mark_exhausted(
-            entry,
-            None,
-            {
-                "reason": CREDENTIAL_PERSIST_FAILED_REASON,
-                "message": f"rotated credential was not durably written to {store}: {exc}",
-            },
-        )
-        return None
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Configured refresh POST timeout plus margin, so a slow token endpoint cannot starve the flock."""
@@ -1464,68 +1355,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
 
-    def _commit_anthropic_rotation(
-        self, entry: PooledCredential, refreshed: Dict[str, Any]
-    ) -> None:
-        """Write a rotated Anthropic pair to its authoritative singleton, or fail closed.
 
-        claude_code -> ~/.claude/.credentials.json (so the fallback resolver
-        and other profiles see it). hermes_pkce -> ~/.hermes/.anthropic_oauth.json
-        (``_seed_from_singletons`` re-seeds it every load; a borrowed row commits
-        to the ROOT's file, never a new profile-local copy, #100339). Not
-        ``endswith``: manual:hermes_pkce is pool-owned and a singleton for it
-        would be a second authority for the same refresh-token family.
-        """
-        if entry.source == "claude_code":
-            store = "~/.claude/.credentials.json"
-        elif entry.source == "hermes_pkce":
-            store = "~/.hermes/.anthropic_oauth.json"
-        else:
-            return
-        try:
-            from agent import anthropic_credentials as ac
-            args = (refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
-            if entry.source == "claude_code":
-                ac._write_claude_code_credentials(*args)
-            else:
-                ac._write_hermes_oauth_credentials(*args, target=_singleton_target_for_entry(self, entry))
-        except Exception as wexc:
-            # Authoritative commit failed: do not mark, persist or return the
-            # rotation as successful, and bypass the re-POST recovery path —
-            # there is nothing left to retry with.
-            raise _RefreshDone(self._fail_closed_unpersisted_rotation(entry, wexc, store=store))
-
-    def _refresh_anthropic(self, entry: PooledCredential) -> PooledCredential:
-        """POST the Anthropic refresh, commit to the singleton, return the rotated (unpersisted) entry."""
-        from agent.anthropic_credentials import (
-            is_rotation_consumed_uncommitted,
-            refresh_anthropic_oauth_pure,
-            spent_rotation_source_path,
-        )
-
-        # Never POST a refresh token another process already spent: the
-        # durable sidecar verdict is what a fresh interpreter sees here.
-        source_path = spent_rotation_source_path(entry.source)
-        if is_rotation_consumed_uncommitted(entry.refresh_token, source_path=source_path) or (
-            is_rotation_consumed_uncommitted(entry.access_token, source_path=source_path)
-        ):
-            raise _RefreshDone(self._fail_closed_unpersisted_rotation(
-                entry,
-                RuntimeError(
-                    "credential pair was rotated by another process but the "
-                    "rotation never committed (spent-rotation sidecar verdict)"
-                ),
-                store=str(source_path or "credential store"),
-            ))
-        refreshed = refresh_anthropic_oauth_pure(entry.refresh_token, use_json=entry.source.endswith("hermes_pkce"))
-        updated = replace(
-            entry,
-            access_token=refreshed["access_token"],
-            refresh_token=refreshed["refresh_token"],
-            expires_at_ms=refreshed["expires_at_ms"],
-        )
-        self._commit_anthropic_rotation(entry, refreshed)
-        return updated
 
     def _post_tokens_refresh(self, entry: PooledCredential) -> PooledCredential:
         """Codex / xAI: POST the refresh and return the rotated (unpersisted) entry."""
@@ -1543,9 +1373,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         # BEFORE spending the refresh_token; ``entry`` is rebound to the synced
         # row so the failure path below recovers against the pair we POSTed.
         try:
-            if self.provider == "anthropic":
-                updated = self._refresh_anthropic(entry)
-            elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
+            if self.provider in _TOKENS_SINGLETON_PROVIDERS:
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif self.provider == "nous":
@@ -1586,44 +1414,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         pre-POST sync and the HTTP call; re-read the provider's token
         authority once more and adopt fresher tokens before giving up.
         """
-        if self.provider == "anthropic":
-            if entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Retrying refresh with synced token from credentials file")
-                    try:
-                        from agent.anthropic_credentials import refresh_anthropic_oauth_pure
-                        refreshed = refresh_anthropic_oauth_pure(
-                            synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
-                        )
-                        # Commit to the authoritative singleton BEFORE marking or
-                        # persisting the pool row, or a failed write leaves an
-                        # "ok" row that the next load_pool() re-seeds over.
-                        self._commit_anthropic_rotation(synced, refreshed)
-                        return self._adopt(
-                            synced,
-                            access_token=refreshed["access_token"],
-                            refresh_token=refreshed["refresh_token"],
-                            expires_at_ms=refreshed["expires_at_ms"],
-                            last_status=STATUS_OK,
-                            last_status_at=None,
-                            last_error_code=None,
-                        )
-                    except _RefreshDone as done:
-                        return done.result
-                    except Exception as retry_exc:
-                        logger.debug("Retry refresh also failed: %s", retry_exc)
-                elif not self._entry_needs_refresh(synced):
-                    logger.debug("Credentials file has valid token, using without refresh")
-                    return synced
-            else:
-                # Backstop for pool-owned sources (hermes_pkce, manual:dashboard_pkce):
-                # the winner may have persisted between our pre-check and our POST.
-                synced = self._sync_entry_from_pool_store(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
-                    return self._adopt(synced, **_MARK_OK)
-        elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
+        if self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
             synced = self._sync_entry_from_auth_store(entry)
             if synced.refresh_token != entry.refresh_token:
@@ -1738,10 +1529,6 @@ class CredentialPool(CredentialPoolAdminMixin):
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":
@@ -1788,8 +1575,6 @@ class CredentialPool(CredentialPoolAdminMixin):
         """
         if entry.source != _RESYNC_SOURCE.get(self.provider) or entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
             return entry
-        if self.provider == "anthropic":
-            return self._sync_anthropic_entry_from_credentials_file(entry)
         if self.provider == "nous":
             return self._sync_nous_entry_from_auth_store(entry)
         return self._sync_entry_from_auth_store(entry)
@@ -2147,7 +1932,6 @@ class CredentialPool(CredentialPoolAdminMixin):
         return refreshed
 
 
-
 # --- Seeding --------------------------------------------------------------
 
 
@@ -2269,55 +2053,6 @@ class _Seeder:
         return self.changed, self.active_sources
 
 
-def _seed_anthropic_singletons(seed: _Seeder) -> None:
-    # Only auto-discover external credentials (Claude Code, Hermes PKCE) when
-    # the user explicitly configured anthropic; otherwise auxiliary fallback
-    # chains would read ~/.claude/.credentials.json without consent (PR #4210).
-    try:
-        from hermes_cli.auth import is_provider_explicitly_configured
-        if not is_provider_explicitly_configured("anthropic"):
-            return
-    except ImportError:
-        pass
-
-    # API-key vs OAuth is a user-visible choice at `hermes setup`. The API-key
-    # signal is ANTHROPIC_API_KEY set AND no OAuth env vars (the save_* helpers
-    # zero the other side). Then we MUST NOT seed autodiscovered OAuth tokens:
-    # rotation on a 401/429 would silently flip the session onto OAuth, which
-    # forces the Claude Code identity injection, `mcp_` tool-name rewrite and
-    # claude-cli User-Agent the user explicitly opted out of. Prefer
-    # ~/.hermes/.env over os.environ, as `_seed_from_env` does.
-    _env_file = load_env()
-
-    def _env_val(key: str) -> str:
-        return (_env_file.get(key) or _get_secret(key, "") or "").strip()
-
-    anthropic_oauth_env = _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
-    if _env_val("ANTHROPIC_API_KEY") and not anthropic_oauth_env:
-        # Prune stale autodiscovered OAuth entries from a previous OAuth
-        # session so a transient 401 cannot revive them.
-        seed.changed |= _retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
-        return
-
-    from agent.anthropic_credentials import (
-        read_claude_code_credentials,
-        read_hermes_oauth_credentials,
-    )
-
-    for source_name, creds in (
-        ("hermes_pkce", read_hermes_oauth_credentials()),
-        ("claude_code", read_claude_code_credentials()),
-    ):
-        if creds and creds.get("accessToken"):
-            seed.upsert(source_name, {
-                "auth_type": AUTH_TYPE_OAUTH,
-                "access_token": creds.get("accessToken", ""),
-                "refresh_token": creds.get("refreshToken"),
-                "expires_at_ms": creds.get("expiresAt"),
-                "label": label_from_token(creds.get("accessToken", ""), source_name),
-            })
-
-
 def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     state = _load_provider_state(auth_store, "nous")
     has_runtime_material = bool(
@@ -2399,53 +2134,6 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         logger.debug("Copilot token seed failed: %s", exc)
 
 
-def _seed_qwen_singleton(seed: _Seeder) -> None:
-    # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json (written by the Qwen
-    # CLI). refresh_if_expiring=False avoids network calls during pool loading.
-    try:
-        from hermes_cli.auth import resolve_qwen_runtime_credentials
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
-        token = creds.get("api_key", "")
-        if token:
-            source_name = creds.get("source", "qwen-cli")
-            seed.upsert(source_name, {
-                "auth_type": AUTH_TYPE_OAUTH,
-                "access_token": token,
-                "expires_at_ms": creds.get("expires_at_ms"),
-                "base_url": creds.get("base_url", ""),
-                "label": creds.get("auth_file", source_name),
-            })
-    except Exception as exc:
-        logger.debug("Qwen OAuth token seed failed: %s", exc)
-
-
-def _seed_minimax_singleton(seed: _Seeder) -> None:
-    # Read the raw auth.json state rather than resolve_minimax_oauth_runtime_credentials,
-    # which always refreshes on expiry (surprise network calls during discovery).
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("minimax-oauth")
-        if not (state and state.get("access_token")):
-            return
-        expires_at_ms = None
-        try:
-            raw = state.get("expires_at", "")
-            if raw:
-                expires_at_ms = int(datetime.fromisoformat(raw).timestamp() * 1000)
-        except Exception:
-            expires_at_ms = None
-        seed.upsert("oauth", {
-            "auth_type": AUTH_TYPE_OAUTH,
-            "access_token": state["access_token"],
-            "refresh_token": state.get("refresh_token"),
-            "expires_at_ms": expires_at_ms,
-            "base_url": str(state.get("inference_base_url", "") or "").rstrip("/"),
-            "label": state.get("label", "") or label_from_token(state.get("access_token", ""), "oauth"),
-        })
-    except Exception as exc:
-        logger.debug("MiniMax OAuth token seed failed: %s", exc)
-
-
 def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     """Codex / xAI: surface the auth.json ``providers.<id>.tokens`` singleton as ``device_code``.
 
@@ -2476,23 +2164,13 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
 
 def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     seed = _Seeder(provider, entries)
-    auth_store = _load_auth_store()
-    if provider == "anthropic":
-        _seed_anthropic_singletons(seed)
-    elif provider == "nous":
-        _seed_nous_singleton(seed, auth_store)
+    if provider == "nous":
+        _seed_nous_singleton(seed, _load_auth_store())
     elif provider == "copilot":
         _seed_copilot_singleton(seed)
-    elif provider == "qwen-oauth":
-        _seed_qwen_singleton(seed)
-    elif provider == "minimax-oauth":
-        _seed_minimax_singleton(seed)
-    elif provider in _TOKENS_SINGLETON_PROVIDERS:
-        # `hermes auth remove openai-codex` suppresses device_code; without
-        # this gate the removal is undone on the next load_pool().
-        if provider == "openai-codex" and seed.is_suppressed(provider, "device_code"):
-            return seed.result
-        _seed_tokens_singleton(seed, auth_store)
+    elif provider == "openai-codex" and not seed.is_suppressed(provider, "device_code"):
+        # Service credentials for Codex image generation, never an inference route.
+        _seed_tokens_singleton(seed, _load_auth_store())
     return seed.result
 
 
@@ -2560,10 +2238,7 @@ def _env_payload(*, env_var: str, token: str, base_url: str) -> Dict[str, Any]:
 
 
 # Region-specific endpoints inferred from the key itself.
-_ENV_BASE_URL_RESOLVERS = {
-    "kimi-coding": _resolve_kimi_base_url,
-    "zai": _resolve_zai_base_url,
-}
+_ENV_BASE_URL_RESOLVERS = {}
 
 
 def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
@@ -2602,15 +2277,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if provider == "copilot":
         return seed.result
 
-    if provider == "openrouter":
-        for env_var in _env_key_var_candidates(["OPENROUTER_API_KEY"], entries):
-            token = get_env_prefer_dotenv(env_var)
-            if token and seed.upsert(
-                f"env:{env_var}",
-                _env_payload(env_var=env_var, token=token, base_url=OPENROUTER_BASE_URL),
-            ):
-                _warn_env_ingestion_once(provider, env_var)
-        return seed.result
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
@@ -2621,8 +2287,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
 
     env_vars = list(pconfig.api_key_env_vars)
-    if provider == "anthropic":
-        env_vars = ["ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
     env_vars = _env_key_var_candidates(env_vars, entries)
 
     resolve_base_url = _ENV_BASE_URL_RESOLVERS.get(provider)
@@ -2714,6 +2378,22 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
+    custom_config = _get_custom_provider_config(provider)
+    # Codex and xAI remain service-only credentials, not inference providers.
+    if provider not in _RESERVED_POOL_PROVIDERS and not provider.startswith(CUSTOM_POOL_PREFIX):
+        # A raw durable slug is storage, not a provider registration. Only an
+        # explicit endpoint mapping grants access; saved auth rows alone cannot.
+        custom_config = next((entry for name, entry in _iter_custom_providers()
+                              if provider in _pool_keys_for_custom_entry(name, entry)
+                              and _norm_url(entry.get("base_url"))), None)
+        if custom_config is None:
+            return CredentialPool(provider, [])
+        endpoint = _norm_url(custom_config.get("base_url"))
+        entries = [PooledCredential.from_dict(provider, payload)
+                   for payload in read_credential_pool(provider)
+                   if _norm_url(payload.get("base_url")) in {"", endpoint}]
+        # No built-in seed/refresh or durable migration for custom storage.
+        return CredentialPool(provider, entries)
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).
@@ -2779,6 +2459,11 @@ def load_pool(provider: str) -> CredentialPool:
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
             removed_ids=disk_ids - new_ids,
         )
+    if custom_config is not None:
+        # Filter only the runtime view: credentials for a previous endpoint
+        # remain on disk and must never be silently rewritten or removed.
+        endpoint = _norm_url(custom_config.get("base_url"))
+        entries = [entry for entry in entries if _norm_url(entry.base_url) in {"", endpoint}]
     pool = CredentialPool(provider, entries)
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).

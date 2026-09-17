@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -37,8 +36,8 @@ def test_bundled_plugins_discovered():
     plugins_dir = REPO_ROOT / "plugins" / "model-providers"
     assert plugins_dir.is_dir(), f"Missing {plugins_dir}"
 
-    child_dirs = [c for c in plugins_dir.iterdir() if c.is_dir()]
-    assert len(child_dirs) >= 28, f"Expected at least 28 provider plugins, found {len(child_dirs)}"
+    child_dirs = [c for c in plugins_dir.iterdir() if (c / "plugin.yaml").is_file()]
+    assert child_dirs
 
     for child in child_dirs:
         assert (child / "__init__.py").exists(), f"{child.name} missing __init__.py"
@@ -56,7 +55,7 @@ def test_all_profiles_register():
     from providers import list_providers
 
     plugins_dir = REPO_ROOT / "plugins" / "model-providers"
-    plugin_dir_count = sum(1 for c in plugins_dir.iterdir() if c.is_dir())
+    plugin_dir_count = sum(1 for c in plugins_dir.iterdir() if (c / "plugin.yaml").is_file())
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
@@ -66,16 +65,11 @@ def test_all_profiles_register():
         f"Expected at least {plugin_dir_count} profiles (one per plugin dir), got {len(names)}: {names}"
     )
 
-    # Spot-check representative providers from different categories
-    for required in (
-        "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
-        "nebius-token-factory",
-    ):
-        assert required in names, f"Missing profile: {required}"
+    from hermes_cli.provider_policy import SUPPORTED_BUILTIN_PROVIDERS
+    assert set(names) == SUPPORTED_BUILTIN_PROVIDERS
 
 
-def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
+def test_user_plugin_cannot_restore_retired_account(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
     # Point HERMES_HOME at a fresh temp dir
     hermes_home = tmp_path / ".hermes"
@@ -111,11 +105,9 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     from providers import get_provider_profile
 
     gmi = get_provider_profile("gmi")
-    assert gmi is not None
-    assert gmi.base_url == "https://user-override.example.com/v1", (
-        f"User override not applied; got base_url={gmi.base_url!r}"
-    )
-    assert "gmi-user-override-test" in gmi.aliases
+    assert gmi is None
+    assert get_provider_profile("gmi-user-override-test") is None
+    assert get_provider_profile("nous") is not None
 
     # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()

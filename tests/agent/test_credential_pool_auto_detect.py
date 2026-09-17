@@ -21,9 +21,11 @@ def _mock_client(api_key="test-key", base_url="https://api.anthropic.com"):
 class TestCredentialPoolPreservedOnAutoDetect:
     """Issue #63425: credential pool should survive provider auto-detection."""
 
-    def test_anthropic_pool_preserved_with_url_auto_detect(self):
-        """When provider=None and base_url=api.anthropic.com, the passed
-        credential_pool should remain attached after auto-detection."""
+    def test_custom_messages_pool_preserved_with_url_auto_detect(self):
+        """An explicit Messages endpoint auto-detects as custom, preserving its custom pool.
+
+        The endpoint hostname no longer implies a native Anthropic account identity.
+        """
         from agent.agent_init import init_agent
 
         # Build a minimal agent-like object (like tests use object.__new__)
@@ -33,14 +35,14 @@ class TestCredentialPoolPreservedOnAutoDetect:
         agent._base_url_lower = ""
         agent._base_url_hostname = ""
 
-        pool = SimpleNamespace(provider="anthropic")
+        pool = SimpleNamespace(provider="custom")
 
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
              patch("model_tools.get_tool_definitions", return_value=[]), \
              patch('agent.anthropic_adapter.build_anthropic_client', return_value=MagicMock()), \
              patch('agent.anthropic_credentials.resolve_anthropic_token', return_value=''), \
              patch('agent.anthropic_credentials._is_oauth_token', return_value=False), \
-             patch('agent.azure_identity_adapter.is_token_provider', return_value=False), \
+             patch('agent.bearer_auth.is_token_provider', return_value=False), \
              patch('hermes_cli.model_normalize.normalize_model_for_provider', return_value='test-model'), \
              patch('agent.credential_pool.load_pool', return_value=MagicMock()), \
              patch('hermes_cli.config.load_config', return_value={}), \
@@ -53,6 +55,7 @@ class TestCredentialPoolPreservedOnAutoDetect:
                 base_url="https://api.anthropic.com",
                 api_key="test-key",
                 provider=None,
+                api_mode="anthropic_messages",
                 model="test-model",
                 credential_pool=pool,
                 skip_context_files=True,
@@ -60,12 +63,8 @@ class TestCredentialPoolPreservedOnAutoDetect:
                 quiet_mode=True,
             )
 
-        print(f"agent.provider = {agent.provider!r}")
-        print(f"agent.api_mode = {agent.api_mode!r}")
-        print(f"agent._credential_pool is pool = {agent._credential_pool is pool}")
-
-        assert agent.provider == "anthropic", (
-            f"Provider should be auto-detected as 'anthropic', got {agent.provider!r}"
+        assert agent.provider == "custom", (
+            f"Provider should be auto-detected as 'custom', got {agent.provider!r}"
         )
         assert agent.api_mode == "anthropic_messages", (
             f"api_mode should be 'anthropic_messages', got {agent.api_mode!r}"

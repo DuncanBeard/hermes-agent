@@ -11,7 +11,7 @@ def _agent(tmp_path, monkeypatch):
     from hermes_state import SessionDB
 
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
-                   model="test-model", provider="openai-compat", api_key="test",
+                   model="test-model", provider="custom", api_key="test",
                    base_url="http://127.0.0.1:1/v1", max_iterations=4,
                    quiet_mode=True, skip_context_files=True, skip_memory=True)
 

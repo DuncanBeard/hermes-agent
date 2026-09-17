@@ -292,7 +292,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
     from agent.anthropic_credentials import _is_oauth_token
-    from agent.azure_identity_adapter import is_token_provider
+    from agent.bearer_auth import is_token_provider
     from hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
     if is_token_provider(key):
@@ -334,21 +334,8 @@ def _refresh_credentials_after_401(
 
     if status_code != 401:
         return False
-    if (
-        agent.api_mode == "codex_responses"
-        and agent.provider in {"openai-codex", "xai-oauth"}
-        and not _retry.codex_auth_retry_attempted
-    ):
-        _retry.codex_auth_retry_attempted = True
-        if agent._try_refresh_codex_client_credentials(force=True):
-            _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
-            return True
-    if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
-        _retry.vertex_auth_retry_attempted = True
-        if agent._try_refresh_vertex_client_credentials():
-            agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
-            return True
+
+
     if (
         agent.api_mode in ("chat_completions", "anthropic_messages")
         and agent.provider == "nous"
@@ -364,16 +351,7 @@ def _refresh_credentials_after_401(
         if agent._try_refresh_copilot_client_credentials():
             agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
             return True
-    if (
-        agent.api_mode == "anthropic_messages"
-        and hasattr(agent, '_anthropic_api_key')
-        and not _retry.anthropic_auth_retry_attempted
-    ):
-        _retry.anthropic_auth_retry_attempted = True
-        if agent._try_refresh_anthropic_client_credentials():
-            _plines(agent, "🔐 Anthropic credentials refreshed after 401. Retrying request...")
-            return True
-        _print_anthropic_401_diagnostics(agent, agent._anthropic_api_key)
+
     return False
 
 def _recover_format_errors(
@@ -663,39 +641,7 @@ def _print_nonretryable_auth_guidance(
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
         return
-    if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
-        if provider == "openai-codex":
-            _vlines(
-                agent,
-                "   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been",
-                "      refreshed by another client (Codex CLI, VS Code). To fix:",
-                "      1. Run `codex` in your terminal to generate fresh tokens.",
-                "      2. Then run `hermes auth` to re-authenticate.",
-            )
-        elif provider == "xai-oauth":
-            _vlines(
-                agent,
-                "   💡 xAI OAuth token was rejected (HTTP 401). To fix:",
-                "      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.",
-            )
-        else:  # nous
-            _vlines(
-                agent,
-                "   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be",
-                "      expired, revoked, or your account may be out of credits. To fix:",
-                "      1. Re-authenticate: hermes portal",
-                "      2. Check your portal account: https://portal.nousresearch.com",
-            )
-            # ``:free`` is OpenRouter slug syntax; Nous Portal will reject the model
-            # name even after a successful re-auth.
-            if isinstance(model, str) and model.endswith(":free"):
-                _vlines(
-                    agent,
-                    f"      ⚠️  Note: `{model}` looks like an OpenRouter slug (`:free` suffix).",
-                    "         Nous Portal won't recognize that model name. Either switch to a",
-                    f"         Nous catalog model, or run `/model openrouter:{model}` to use OpenRouter.",
-                )
-        return
+
     _vlines(
         agent,
         "   💡 Your API key was rejected by the provider. Check:",

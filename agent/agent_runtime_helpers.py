@@ -915,24 +915,23 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
 
 
 def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
-    """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
-    if (agent.provider or "").strip().lower() == "moa":
-        # MoA has empty client_kwargs; rebuild via the shared facade factory so the
-        # reference_callback relay survives recovery.
-        from agent.moa_loop import build_moa_facade
-        agent.client = build_moa_facade(agent, agent.model)
-        # MoA is a virtual chat-completions provider. It never has real OpenAI client kwargs; restoring it
-        # after a fallback must recreate the facade, not call OpenAI() with an empty api_key. Use the shared
-        # factory so the restored facade keeps the reference_callback relay wired at init — a bare
-        # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
-        agent._anthropic_client = None
-    elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
-    elif agent.api_mode == "anthropic_messages":
-        _build_anthropic_client_from_runtime(agent, rt)
-    else:
-        agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
+    """Restore route and client together; a failed SDK build leaves the old route usable."""
+    from hermes_cli.provider_policy import require_supported_provider
+    require_supported_provider(rt["provider"])
+    snapshot = _snapshot_switch_state(agent)
+    snapshot["request_overrides"] = getattr(agent, "request_overrides", {})
+    if hasattr(agent, "_transport_cache"):
+        snapshot["_transport_cache"] = dict(agent._transport_cache)
+    try:
+        _apply_primary_runtime_fields(agent, rt)
+        if agent.api_mode == "anthropic_messages":
+            _build_anthropic_client_from_runtime(agent, rt)
+        else:
+            agent.client = agent._create_openai_client(agent._client_kwargs, reason=reason, shared=True)
+            agent._anthropic_client = None
+    except Exception:
+        _restore_switch_snapshot(agent, snapshot)
+        raise
 
 
 def try_recover_primary_transport(
@@ -958,12 +957,12 @@ def try_recover_primary_transport(
         # attempts may still be unwinding their SSL BIOs on the old pool. ``_retire_shared_openai_client``
         # shuts the sockets down (FD-safe from any thread) and defers the FD release to GC, which cannot
         # complete until every borrowing thread has unwound.
-        if getattr(agent, "client", None) is not None:
-            with contextlib.suppress(Exception):
-                agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
+        old_client = getattr(agent, "client", None)
         rt = agent._primary_runtime
-        _apply_primary_runtime_fields(agent, rt)
         _rebuild_primary_client(agent, rt, reason="primary_recovery")
+        if old_client is not None:
+            with contextlib.suppress(Exception):
+                agent._retire_shared_openai_client(old_client, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
@@ -1151,7 +1150,7 @@ def restore_primary_runtime(agent) -> bool:
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
-        _apply_primary_runtime_fields(agent, rt)
+        _rebuild_primary_client(agent, rt, reason="restore_primary")
         _restore_runtime_capabilities(agent, rt)
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout for snapshots predating the native-vs-proxy split.
@@ -1163,7 +1162,6 @@ def restore_primary_runtime(agent) -> bool:
         if getattr(agent, "_cache_disabled", False):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
-        _rebuild_primary_client(agent, rt, reason="restore_primary")
         agent.context_compressor.update_model(
             model=rt["compressor_model"], context_length=rt["compressor_context_length"],
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
@@ -1418,28 +1416,6 @@ def _has_litellm_token(value: str, delimiters: str) -> bool:
     return "litellm" in value.translate(str.maketrans(delimiters, " " * len(delimiters))).split()
 
 
-def _moa_aggregator_cache_policy(agent, eff_model: str) -> tuple[bool, bool]:
-    """MoA virtual provider: resolve the policy from the preset's real aggregator slot (the
-    virtual provider matches no caching branch and would silently lose caching)."""
-    try:
-        from hermes_cli.config import load_config as _load_moa_cfg
-        from hermes_cli.moa_config import resolve_moa_preset
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        agg = resolve_moa_preset(_load_moa_cfg().get("moa") or {}, eff_model or None).get("aggregator") or {}
-        agg_provider = str(agg.get("provider") or "").strip()
-        agg_model = str(agg.get("model") or "").strip()
-        if agg_provider and agg_model:
-            agg_base_url = agg_api_mode = ""
-            with contextlib.suppress(Exception):
-                rt = resolve_runtime_provider(requested=agg_provider, target_model=agg_model)
-                agg_base_url = rt.get("base_url") or ""
-                agg_api_mode = rt.get("api_mode") or ""
-            return anthropic_prompt_cache_policy(
-                agent, provider=agg_provider, base_url=agg_base_url, api_mode=agg_api_mode, model=agg_model
-            )
-    except Exception as _moa_exc:  # pragma: no cover - defensive
-        logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
-    return False, False
 
 
 def _route_may_be_custom(agent, eff_provider: str, provider_lower: str, eff_base_url: str) -> bool:
@@ -1496,8 +1472,6 @@ def anthropic_prompt_cache_policy(
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
-    if eff_provider.strip().lower() == "moa":
-        return _moa_aggregator_cache_policy(agent, eff_model)
     if isinstance(eff_model, dict):
         eff_model = eff_model.get('model') or eff_model.get('default') or ''
     eff_model = eff_model if isinstance(eff_model, str) else str(eff_model or '')
@@ -1655,28 +1629,9 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
 
 
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
-
-
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+    from hermes_cli.provider_policy import require_supported_provider
+    require_supported_provider(agent.provider)
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
@@ -1706,9 +1661,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # a `_moa_prepared_request` TypeError (#78382) or, when _client_kwargs carry an unrelated relay
     # base_url, leaks the request to a foreign gateway. Rebuild the facade instead (build_moa_facade also
     # re-wires the reference relay, see #53802).
-    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
-        from agent.moa_loop import build_moa_facade
-        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
+
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(
@@ -1729,11 +1682,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
+
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py and
@@ -1753,12 +1702,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
     # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
     # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
-    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        timeout = client_kwargs.get("timeout")
-        configure_bedrock_openai_client_kwargs(
-            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
-        )
+
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:
@@ -1778,9 +1722,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
     # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
     # empty pool to rotate (#110831).
-    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
@@ -1891,48 +1833,18 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
-    if new_norm == "moa":
-        from agent.moa_loop import build_moa_facade
-        # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
-        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
-        # client.responses.create against the facade (matches agent_init.py).
-        agent.api_mode = "chat_completions"
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
-        return
-    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
-        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
-        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
-        return
+
+
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
-        # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
-        # must never receive Anthropic credentials.
-        is_native_anthropic = new_provider == "anthropic"
-        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
-        # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
-        # agent_init.py).
-        if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-            try:
-                from hermes_cli.auth import build_minimax_oauth_token_provider
-                effective_key = build_minimax_oauth_token_provider()
-            except Exception as _mm_exc:  # noqa: BLE001
-                logger.warning(
-                    "MiniMax OAuth: failed to install per-request token provider "
-                    "on switch (%s); using static bearer.", _mm_exc,
-                )
+        effective_key = api_key or agent.api_key or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
         )
-        agent._is_anthropic_oauth = bool(is_native_anthropic and isinstance(effective_key, str) and _is_oauth_token(effective_key))
+        agent._is_anthropic_oauth = False
         agent.client = None
         agent._client_kwargs = {}
         return
@@ -2152,6 +2064,13 @@ def switch_model(
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
     the change persists across turns. A failed swap/rebuild rolls back to the pre-switch
     snapshot and re-raises (callers catch)."""
+    from hermes_cli.provider_policy import require_supported_provider
+    from hermes_cli.providers import normalize_provider
+    from hermes_cli.runtime_provider_custom import canonical_custom_identity
+    from hermes_cli.auth import resolve_provider
+    new_provider = resolve_provider(new_provider)
+    if api_mode and api_mode not in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        raise ValueError(f"Unsupported inference API mode: {api_mode}")
     old_model = agent.model
     old_provider = agent.provider
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,

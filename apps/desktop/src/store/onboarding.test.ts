@@ -386,6 +386,17 @@ describe('refreshOnboarding', () => {
 })
 
 describe('OAuth onboarding', () => {
+  it('rejects obsolete external CLI sign-in instead of offering copilot login', async () => {
+    const { startProviderOAuth } = await import('./onboarding')
+    await startProviderOAuth(
+      { ...makeOAuthProvider('copilot', 'GitHub Copilot'), flow: 'external' },
+      onboardingContext(keylessCustomGateway())
+    )
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('error')
+    expect(flow.status === 'error' && flow.message).toContain('direct')
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
@@ -488,6 +499,49 @@ describe('OAuth onboarding', () => {
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
     expect(setIndex).toBeGreaterThan(recommendedIndex)
+  })
+
+  it('never substitutes a different catalog provider when the signed-in provider has no models', async () => {
+    const calls: string[] = []
+    installApiMock(async ({ path }) => {
+      calls.push(path)
+
+      if (path.endsWith('/nous/submit')) {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'copilot', name: 'GitHub Copilot', models: ['claude-sonnet'] }] }
+      }
+
+      if (path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'copilot', model: 'claude-sonnet' }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'copilot', model: 'claude-sonnet' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'awaiting_user',
+          provider: makeOAuthProvider('nous', 'Nous Portal'),
+          start: { flow: 'pkce', session_id: 'nous-test', auth_url: 'https://portal.example/auth', expires_in: 600 },
+          code: 'test-code'
+        }
+      })
+    )
+    await submitOnboardingCode({
+      requestGateway: async method =>
+        (method === 'setup.runtime_check'
+          ? { ok: false, provider: 'nous', error: 'No Nous models available. Choose a model or retry sign-in.' }
+          : {}) as never
+    })
+    expect(calls).not.toContain('/api/model/set')
+    expect($desktopOnboarding.get().flow.status).toBe('error')
   })
 
   it('does not advance when the default model assignment is not persisted', async () => {

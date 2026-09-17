@@ -187,8 +187,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Native Anthropic provider — only needed when provider=anthropic (not via
-# OpenRouter or other aggregators).
+# Anthropic Messages wire protocol for explicitly configured custom servers.
+# This does not enable a native Anthropic account/provider integration.
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
@@ -303,9 +303,7 @@ mistral = ["mistralai==2.4.8"]
 # tools/lazy_deps.py on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
-bedrock = ["boto3==1.42.89"]
-vertex = ["google-auth==2.55.1"]
-azure-identity = ["azure-identity==1.25.3"]
+
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
@@ -382,7 +380,7 @@ all = [
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
   #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
+  #   dingtalk, feishu, tts-premium (elevenlabs)
   #
   # Why: the matrix extra in particular pulls `mautrix[encryption]`
   # which depends on `python-olm`. python-olm has Linux-only wheels and
@@ -486,6 +484,7 @@ aiosqlite = false
 alibabacloud-dingtalk = false
 anthropic = false
 asyncpg = false
+# Preserve resolver metadata for these packages if retained tool extras use them transitively.
 azure-identity = false
 boto3 = false
 brotlicffi = false

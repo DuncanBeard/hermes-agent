@@ -77,7 +77,6 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
         </DropdownMenuItem>
       }
       gateway={gateway}
-      includeMoa
       ownerConnectionId={ownerConnectionId}
       profile={profile}
       request={requestGateway}

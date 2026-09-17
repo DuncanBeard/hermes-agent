@@ -41,7 +41,7 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
     return AIAgent(
         api_key="test-key",
         base_url=base_url,
-        provider="copilot" if "githubcopilot" in base_url else "openrouter",
+        provider="copilot" if "githubcopilot" in base_url.lower() else "custom",
         api_mode=api_mode,
         max_iterations=4,
         quiet_mode=True,

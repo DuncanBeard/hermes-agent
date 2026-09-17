@@ -52,9 +52,9 @@ def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts=None):
     db = SessionDB(db_path=tmp_path / "state.db")
     with contextlib.redirect_stdout(io.StringIO()):
         agent = AIAgent(
-            base_url="https://chatgpt.com/backend-api/codex",
+            base_url="https://example.invalid/v1",
             api_key="test-key",
-            provider="openai-codex",
+            provider="custom",
             model="gpt-5.5",
             enabled_toolsets=[],
             disabled_toolsets=[],

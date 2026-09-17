@@ -24,14 +24,14 @@ def _max_tokens_fn(n):
     return {"max_completion_tokens": n}
 
 
-class TestNvidiaParity:
+class TestCustomMaxTokens:
     """NVIDIA NIM: default max_tokens=16384."""
 
 
     def test_user_max_tokens_overrides(self, transport):
         from providers import get_provider_profile
 
-        profile = get_provider_profile("nvidia")
+        profile = get_provider_profile("custom")
         kw = transport.build_kwargs(
             model="nvidia/llama-3.1-nemotron-70b-instruct",
             messages=_simple_messages(),
@@ -43,7 +43,7 @@ class TestNvidiaParity:
         assert kw["max_completion_tokens"] == 4096  # user overrides default
 
 
-class TestKimiParity:
+class TestCustomReasoning:
     """Kimi: OMIT temperature, max_tokens=32000, thinking + reasoning_effort."""
 
     def test_temperature_omitted(self, transport):
@@ -51,7 +51,7 @@ class TestKimiParity:
             model="kimi-k2",
             messages=_simple_messages(),
             tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
+            provider_profile=get_provider_profile("custom"),
             omit_temperature=True,
         )
         assert "temperature" not in kw
@@ -64,12 +64,11 @@ class TestKimiParity:
             model="kimi-k2",
             messages=_simple_messages(),
             tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
+            provider_profile=get_provider_profile("custom"),
             reasoning_config={"enabled": True, "effort": "high"},
         )
         assert kw.get("reasoning_effort") == "high"
         assert "thinking" not in kw.get("extra_body", {})
-
 
 
     def test_reasoning_effort_top_level(self, transport):
@@ -78,30 +77,11 @@ class TestKimiParity:
             model="kimi-k2",
             messages=_simple_messages(),
             tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
+            provider_profile=get_provider_profile("custom"),
             reasoning_config={"enabled": True, "effort": "high"},
         )
         assert kw.get("reasoning_effort") == "high"
         assert "reasoning_effort" not in kw.get("extra_body", {})
-
-
-
-class TestOpenRouterParity:
-    """OpenRouter: provider preferences, reasoning in extra_body."""
-
-    def test_provider_preferences(self, transport):
-        prefs = {"allow": ["anthropic"], "sort": "price"}
-        kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            provider_preferences=prefs,
-        )
-        assert kw["extra_body"]["provider"] == prefs
-
-
-
 
 
 class TestNousParity:
@@ -116,36 +96,6 @@ class TestNousParity:
             provider_profile=get_provider_profile("nous"),
         )
         assert kw["extra_body"]["tags"] == nous_portal_tags()
-
-
-
-
-
-class TestQwenParity:
-    """Qwen: max_tokens=65536, vl_high_resolution, metadata top-level."""
-
-
-    def test_vl_high_resolution(self, transport):
-        kw = transport.build_kwargs(
-            model="qwen3.5-plus",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("qwen-oauth"),
-        )
-        assert kw["extra_body"]["vl_high_resolution_images"] is True
-
-    def test_metadata_top_level(self, transport):
-        """Qwen metadata goes to top-level api_kwargs, NOT extra_body."""
-        meta = {"sessionId": "s123", "promptId": "p456"}
-        kw = transport.build_kwargs(
-            model="qwen3.5-plus",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("qwen-oauth"),
-            qwen_session_metadata=meta,
-        )
-        assert kw["metadata"] == meta
-        assert "metadata" not in kw.get("extra_body", {})
 
 
 class TestCustomOllamaParity:

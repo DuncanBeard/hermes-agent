@@ -10,22 +10,9 @@ from typing import Optional
 from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
 
 
-def _is_profile_api_key_provider(provider_id: str) -> bool:
-    """True when *provider_id* maps to a profile with ``auth_type='api_key'`` — the catch-all
-    in select_provider_and_model() so plugin providers dispatch to the generic key flow."""
-    try:
-        from providers import get_provider_profile
-        _p = get_provider_profile(provider_id)
-        return _p is not None and _p.auth_type == "api_key"
-    except Exception:
-        return False
 
 
-_GENERIC_API_KEY_PROVIDERS = frozenset({
-    "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
-    "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",
-    "opencode-free", "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
-    "nvidia", "ollama-cloud", "tencent-tokenhub", "tencent-tokenplan", "lmstudio"})
+
 
 
 def _short_url(url: str) -> str:
@@ -33,20 +20,6 @@ def _short_url(url: str) -> str:
     return url.replace("https://", "").replace("http://", "").rstrip("/")
 
 
-def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.hermes/.env unless the active provider is 'custom' — a
-    leftover value routes provider:auto auxiliary clients to the old custom endpoint."""
-    from hermes_cli.config import get_env_value, save_env_value, load_config
-    model_cfg = load_config().get("model", {})
-    provider = (model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
-    if provider == "custom" or not provider:
-        return  # custom provider legitimately uses OPENAI_BASE_URL
-
-    stale_url = get_env_value("OPENAI_BASE_URL")
-    if stale_url:
-        save_env_value("OPENAI_BASE_URL", "")
-        shown = f"{stale_url[:40]}..." if len(stale_url) > 40 else stale_url
-        print(f"Cleared stale OPENAI_BASE_URL from .env (was: {shown})")
 
 
 # (task_key, display_name, short_description)
@@ -399,8 +372,7 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     return None if idx is _CANCELLED else idx
 
 
-_DEFAULT_QWEN_PORTAL_MODELS = [
-    "qwen3-coder-plus", "qwen3-coder"]
+
 
 # (mode value, label, description, accepted answers); "" = auto-detect
 _CUSTOM_API_MODES = (
@@ -732,79 +704,10 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
     return existing_key, False
 
 
-def _infer_stepfun_region(base_url: str) -> str:
-    """Infer the current StepFun region from the configured endpoint."""
-    return "china" if "api.stepfun.com" in (base_url or "").strip().lower() else "international"
 
 
-def _stepfun_base_url_for_region(region: str) -> str:
-    from hermes_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
-    return STEPFUN_STEP_PLAN_CN_BASE_URL if region == "china" else STEPFUN_STEP_PLAN_INTL_BASE_URL
 
 
-def _run_anthropic_oauth_flow(save_env_value):
-    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
-    from hermes_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
-
-    def _activate_claude_code_credentials_if_available() -> bool:
-        try:
-            creds = read_claude_code_credentials()
-        except Exception:
-            creds = None
-        if creds and (is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))):
-            use_anthropic_claude_code_credentials(save_fn=save_env_value)
-            print("  ✓ Claude Code credentials linked.")
-            from hermes_constants import display_hermes_home as _dhh_fn
-            print(f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
-            return True
-        return False
-
-    def _paste_token(prompt: str):
-        """Manual setup-token entry: True saved, False empty, None cancelled."""
-        token = _ask(prompt, secret=True, cancel_msg="")
-        if not token:
-            return token
-        save_anthropic_oauth_token(token, save_fn=save_env_value)
-        print("  ✓ Setup-token saved.")
-        return True
-
-    try:
-        _say("", "  Running 'claude setup-token' — follow the prompts below.",
-             "  A browser window will open for you to authorize access.", "")
-        token = run_oauth_setup_token()
-        if token:
-            if _activate_claude_code_credentials_if_available():
-                return True
-            save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ OAuth credentials saved.")
-            return True
-
-        # Subprocess completed but no token auto-detected — ask user to paste
-        _say("", "  If the setup-token was displayed above, paste it here:", "")
-        saved = _paste_token("  Paste setup-token (or Enter to cancel): ")
-        if saved is None:
-            return False
-        if saved:
-            return True
-        print("  ⚠ Could not detect saved credentials.")
-        return False
-
-    except FileNotFoundError:
-        # Claude CLI not installed — guide user through manual setup
-        _say("", "  The 'claude' CLI is required for OAuth login.", "", "  To install and authenticate:", "",
-             "    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code",
-             "    2. Run:                  claude setup-token",
-             "    3. Follow the browser prompts to authorize",
-             "    4. Re-run:               hermes model", "",
-             "  Or paste an existing setup-token now (sk-ant-oat-...):", "")
-        saved = _paste_token("  Setup-token (or Enter to cancel): ")
-        if saved is None:
-            return False
-        if saved:
-            return True
-        print("  Cancelled — install Claude Code and try again.")
-        return False
 
 
 def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:

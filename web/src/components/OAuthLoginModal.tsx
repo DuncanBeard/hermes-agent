@@ -5,7 +5,6 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
@@ -18,10 +17,7 @@ interface Props {
 }
 
 type Phase =
-  | "idle"
   | "starting"
-  | "awaiting_user"
-  | "submitting"
   | "polling"
   | "approved"
   | "error";
@@ -29,7 +25,6 @@ type Phase =
 export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
-  const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -47,14 +42,13 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       .startOAuthLogin(provider.id)
       .then((resp) => {
         if (!isMounted.current) return;
+        if (resp.flow !== "device_code") {
+          throw new Error("Unsupported login flow. Only device-code login for Nous and GitHub Copilot is supported. Refresh the dashboard and retry.");
+        }
         setStart(resp);
         setSecondsLeft(resp.expires_in);
-        setPhase(resp.flow === "device_code" ? "polling" : "awaiting_user");
-        if (resp.flow === "pkce") {
-          window.open(resp.auth_url, "_blank", "noopener,noreferrer");
-        } else {
-          window.open(resp.verification_url, "_blank", "noopener,noreferrer");
-        }
+        setPhase("polling");
+        window.open(resp.verification_url, "_blank", "noopener,noreferrer");
       })
       .catch((e) => {
         if (!isMounted.current) return;
@@ -151,33 +145,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     };
   }, [start, phase, provider.id, provider.name, onSuccess, onClose]);
 
-  const handleSubmitPkceCode = async () => {
-    if (!start || start.flow !== "pkce") return;
-    if (!pkceCode.trim()) return;
-    setPhase("submitting");
-    setErrorMsg(null);
-    try {
-      const resp = await api.submitOAuthCode(
-        provider.id,
-        start.session_id,
-        pkceCode.trim(),
-      );
-      if (!isMounted.current) return;
-      if (resp.ok && resp.status === "approved") {
-        setPhase("approved");
-        onSuccess(`${provider.name} connected`);
-        window.setTimeout(() => isMounted.current && onClose(), 1500);
-      } else {
-        setPhase("error");
-        setErrorMsg(resp.message || "Token exchange failed");
-      }
-    } catch (e) {
-      if (!isMounted.current) return;
-      setPhase("error");
-      setErrorMsg(`Submit failed: ${errorMessage(e)}`);
-    }
-  };
-
   const handleClose = async () => {
     if (start && phase !== "approved" && phase !== "error") {
       try {
@@ -265,52 +232,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
             </div>
           )}
 
-          {start?.flow === "pkce" && phase === "awaiting_user" && (
-            <>
-              <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
-                <li>{t.oauth.pkceStep1}</li>
-                <li>{t.oauth.pkceStep2}</li>
-                <li>{t.oauth.pkceStep3}</li>
-              </ol>
-              <div className="flex flex-col gap-2">
-                <Input
-                  value={pkceCode}
-                  onChange={(e) => setPkceCode(e.target.value)}
-                  placeholder={t.oauth.pasteCode}
-                  onKeyDown={(e) => e.key === "Enter" && handleSubmitPkceCode()}
-                  autoFocus
-                />
-                <div className="flex items-center gap-2 justify-between">
-                  <a
-                    href={
-                      (start as Extract<OAuthStartResponse, { flow: "pkce" }>)
-                        .auth_url
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    {t.oauth.reOpenAuth}
-                  </a>
-                  <Button
-                    onClick={handleSubmitPkceCode}
-                    disabled={!pkceCode.trim()}
-                  >
-                    {t.oauth.submitCode}
-                  </Button>
-                </div>
-              </div>
-            </>
-          )}
-
-          {phase === "submitting" && (
-            <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
-              <Spinner />
-              {t.oauth.exchangingCode}
-            </div>
-          )}
-
           {start?.flow === "device_code" && phase === "polling" && (
             <>
               <p className="text-sm text-muted-foreground">
@@ -381,33 +302,19 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                     }
                     setErrorMsg(null);
                     setStart(null);
-                    setPkceCode("");
                     setSecondsLeft(null);
                     setPhase("starting");
                     api
                       .startOAuthLogin(provider.id)
                       .then((resp) => {
                         if (!isMounted.current) return;
+                        if (resp.flow !== "device_code") {
+                          throw new Error("Unsupported login flow. Only device-code login for Nous and GitHub Copilot is supported. Refresh the dashboard and retry.");
+                        }
                         setStart(resp);
                         setSecondsLeft(resp.expires_in);
-                        setPhase(
-                          resp.flow === "device_code"
-                            ? "polling"
-                            : "awaiting_user",
-                        );
-                        if (resp.flow === "pkce") {
-                          window.open(
-                            resp.auth_url,
-                            "_blank",
-                            "noopener,noreferrer",
-                          );
-                        } else {
-                          window.open(
-                            resp.verification_url,
-                            "_blank",
-                            "noopener,noreferrer",
-                          );
-                        }
+                        setPhase("polling");
+                        window.open(resp.verification_url, "_blank", "noopener,noreferrer");
                       })
                       .catch((e) => {
                         if (!isMounted.current) return;

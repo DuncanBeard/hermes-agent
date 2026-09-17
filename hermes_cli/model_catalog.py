@@ -250,9 +250,8 @@ def refresh_catalogs() -> bool:
         return False
     catalog = get_catalog(force_refresh=True)
     try:
-        from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models
+        from hermes_cli.models import fetch_nous_recommended_models
 
-        fetch_openrouter_models(force_refresh=True)
         fetch_nous_recommended_models(force_refresh=True)
     except Exception:
         logger.debug("provider catalog refresh failed", exc_info=True)

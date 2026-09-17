@@ -11,7 +11,7 @@ from tools.terminal_tool import terminal_tool
 
 def _agent():
     return AIAgent(api_key="test", base_url="http://127.0.0.1:9/v1",
-                   provider="openai-compat", model="test", enabled_toolsets=[],
+                   provider="custom", model="test", enabled_toolsets=[],
                    quiet_mode=True, skip_context_files=True, skip_memory=True)
 
 

@@ -214,68 +214,7 @@ def _cached_agent_for_hygiene(gateway, session_key: str):
     return entry[0] if isinstance(entry, tuple) and entry else entry
 
 
-async def run_codex_hygiene_compaction(
-    gateway, session_key: str, session_id: str, *, auto_mode: str, history: list,
-    approx_tokens: int, timeout_seconds: float, failure_cooldown_seconds: float = 300.0) -> str:
-    """Session hygiene for ``codex_app_server`` sessions.
 
-    The real context is the server-side thread; the local transcript is a never-replayed mirror, so rewriting
-    it shrinks nothing and evicting the live agent starts the next turn on an EMPTY thread. So: compact the LIVE
-    agent via ``thread/compact/start``, keep it cached, never build a detached compressor. ``native``/``off``
-    skip without local fallback. Returns ``compacted``, ``skipped:<reason>`` or ``failed:<reason>``.
-
-    See #73503.
-    * Evicting the cached live agent afterwards destroys the only real context: the next turn spawns an
-    EMPTY thread and the model starts blank while Hermes still mirrors a full history (abrupt amnesia — the
-    user-facing damage documented on #73503).
-    """
-    mode = str(auto_mode or "native").lower()
-    if mode not in {"native", "hermes", "off"}:
-        mode = "native"
-    if mode != "hermes":
-        # native = app-server compacts itself; off = operator disabled. Local fallback can't shrink the thread.
-        return f"skipped:mode={mode}"
-
-    agent = _cached_agent_for_hygiene(gateway, session_key)
-    if agent is None or agent is _AGENT_PENDING_SENTINEL:
-        # No live agent → no live thread; a detached mirror-only rewrite is the no-op this exists to remove.
-        return "skipped:no-cached-agent"
-    if getattr(agent, "_codex_session", None) is None:
-        return "skipped:no-live-thread"
-
-    compressor = getattr(agent, "context_compressor", None)
-    count_before = getattr(compressor, "compression_count", 0)
-    # copy_context carries profile secret scope / HERMES_HOME override (executors don't propagate ContextVars).
-    worker_future = asyncio.get_running_loop().run_in_executor(
-        None, copy_context().run, lambda: agent._compress_context(history, "", approx_tokens=approx_tokens))
-    track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
-    if callable(track_worker):
-        # ``wait_for`` only cancels the asyncio wrapper; keep the running executor thread visible to shutdown.
-        track_worker(worker_future, agent)
-    try:
-        await asyncio.wait_for(asyncio.shield(worker_future), timeout=max(float(timeout_seconds), 1.0))
-    except asyncio.TimeoutError:
-        # Executor thread keeps running (own RPC timeouts); brake retries so a wedged app-server isn't re-hit.
-        if failure_cooldown_seconds >= 0:
-            _record_hygiene_cooldown(
-                gateway, session_id, failure_cooldown_seconds, "codex app-server thread compaction timed out")
-        logger.warning(
-            "Session hygiene: codex app-server thread compaction for "
-            "session %s timed out after %.1fs; continuing without compaction",
-            session_id, timeout_seconds)
-        return "failed:timeout"
-    except Exception as exc:
-        logger.warning(
-            "Session hygiene: codex app-server thread compaction for session %s failed: %s", session_id, exc)
-        return f"failed:{exc}"
-
-    count_after = getattr(compressor, "compression_count", 0)
-    if count_after > count_before:
-        # Native boundary recorded: compacted server-side; mirror NOT rewritten, agent stays cached.
-        _reset_hygiene_failure_streak(gateway, session_key)
-        return "compacted"
-    # No boundary: internal skip or compaction error; the codex route already persisted its own cooldown.
-    return "failed:no-boundary"
 
 def hygiene_wait_should_extend(
     *, idle: float, timeout: float, waited: float, ceiling: float, fence_cancelled: bool = False
@@ -3968,7 +3907,7 @@ class GatewayRunner(
     _BUSY_REJECT_TEXT: Dict[str, str] = {
         "model": "Agent is running — wait or /stop first, then switch models.",
         "codex-runtime": "Agent is running — wait or /stop first, then change runtime.",
-        "moa": "Agent is running — wait or /stop first, then run /moa."}
+        }
 
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""

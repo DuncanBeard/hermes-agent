@@ -31,7 +31,20 @@ def _normalize_custom_provider_name(value: str) -> str:
 
 
 def _normalize_base_url_for_match(value) -> str:
-    return str(value or "").strip().rstrip("/").lower()
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(str(value or "").strip())
+
+
+def _destination_bound_custom_config(config: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    """Only inherit credentials and arbitrary request payloads at their owned URL.
+
+    Keep nonsecret model/capability/transport settings on endpoint overrides.
+    Headers and extra_body are opaque and may contain credentials under any key.
+    """
+    if _normalize_base_url_for_match(config.get("base_url")) == _normalize_base_url_for_match(base_url):
+        return config
+    secret_fields = {"api_key", "key_env", "api_key_env", "key_cmd", "default_headers", "extra_headers", "extra_body"}
+    return {key: value for key, value in config.items() if key not in secret_fields}
 
 
 def _clean(value: Any) -> str:
@@ -92,20 +105,10 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
 
 
 def _shadowed_by_builtin(requested_norm: str) -> bool:
-    """Raw names map to custom providers only when they are not canonical built-ins. Explicit
-    ``custom:<name>`` keys always target the saved entry, and bare ``custom`` is exempt: a user may
-    literally name a ``providers:`` entry "custom" (returning None before the config scan made such
-    cron jobs fail with ``auth_unavailable``). Defer to the built-in only when the raw name IS the
-    canonical provider (``nous``); an entry matching merely an alias (``kimi`` → ``kimi-coding``)
-    is the user's target."""
-    if requested_norm == "custom" or requested_norm.startswith("custom:"):
-        return False
-    rp = _rp()
-    try:
-        canonical = rp.auth_mod.resolve_provider(requested_norm)
-    except rp.AuthError:
-        return False
-    return (canonical or "").strip().lower() == requested_norm
+    # Do not recurse through auth.resolve_provider: it also resolves configured names.
+    from hermes_cli.provider_policy import SUPPORTED_BUILTIN_PROVIDERS
+    from hermes_cli.providers import normalize_provider
+    return requested_norm != "custom" and normalize_provider(requested_norm) in SUPPORTED_BUILTIN_PROVIDERS
 
 
 def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -363,6 +366,23 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _finalize_custom_runtime(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Snapshot destination-owned model headers once, before any SDK construction."""
+    rp = _rp()
+    cfg = rp._get_model_config(discover=False)
+    configured_base = cfg.get("base_url")
+    if not configured_base and cfg.get("provider"):
+        named = rp._get_named_custom_provider(str(cfg["provider"]))
+        configured_base = named.get("base_url") if named else None
+    if configured_base and _normalize_base_url_for_match(configured_base) == _normalize_base_url_for_match(result["base_url"]):
+        headers = {**rp.normalize_extra_headers(cfg.get("default_headers")),
+                   **rp.normalize_extra_headers(cfg.get("extra_headers")),
+                   **(result.get("extra_headers") or {})}
+        if headers:
+            result["extra_headers"] = headers
+    return result
+
+
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
     """Copy model / capabilities / extra_headers / request_overrides onto a
     resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
@@ -414,22 +434,10 @@ def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **
                        api_key or "no-key-required", **extra)
 
 
-def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str],
-                                  explicit_base_url: str) -> Dict[str, Any]:
-    """Bare ``custom`` + explicit base_url (e.g. a ``model_aliases:`` direct alias)."""
-    rp = _rp()
-    base_url = explicit_base_url.strip().rstrip("/")
-    # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
-    # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
-    if pool_result:
-        pool_result["source"] = "direct-alias"
-        return pool_result
-    # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
-    # Ollama Cloud resolved no key at all.
-    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
-    api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
-    return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
+def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str], explicit_base_url: str) -> Dict[str, Any]:
+    from hermes_cli.runtime_provider_backends import _resolve_custom_runtime
+    return _resolve_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
+                                   explicit_base_url=explicit_base_url)
 
 
 def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optional[str]:
@@ -476,27 +484,38 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
+    from hermes_cli.runtime_provider_backends import validate_custom_endpoint
+    base_url = validate_custom_endpoint(base_url)
+    owns_destination = _normalize_base_url_for_match(custom_provider.get("base_url")) == _normalize_base_url_for_match(base_url)
+    if not owns_destination:
+        destination_identity = rp.find_custom_provider_identity(base_url)
+        if destination_identity:
+            destination_config = rp._get_named_custom_provider(destination_identity)
+            if destination_config:
+                custom_provider = destination_config
+                owns_destination = True
+    custom_provider = _destination_bound_custom_config(custom_provider, base_url)
+    pool_result = None if explicit_api_key else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+        provider_name=(custom_provider.get("provider_key") or custom_provider.get("name")) if owns_destination else None,
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
+    explicit_key = explicit_api_key if callable(explicit_api_key) else (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
         get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
+    api_key: Any = next((c for c in candidates if callable(c) or rp.has_usable_secret(c)), "")
     # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
+    if key_cmd and not explicit_key:
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:

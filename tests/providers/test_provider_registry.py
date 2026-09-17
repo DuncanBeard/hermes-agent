@@ -38,7 +38,7 @@ def _reset_registry() -> None:
 
 def test_list_providers_reuses_cached_snapshot_until_registration_changes():
     _reset_registry()
-    first = _profile("alpha")
+    first = _profile("nous")
     providers.register_provider(first)
 
     listed = providers.list_providers()
@@ -51,7 +51,7 @@ def test_list_providers_reuses_cached_snapshot_until_registration_changes():
     providers.list_providers().clear()
     assert providers.list_providers() == [first]
 
-    second = _profile("beta")
+    second = _profile("custom")
     providers.register_provider(second)
 
     assert providers.list_providers() == [first, second]
@@ -59,8 +59,8 @@ def test_list_providers_reuses_cached_snapshot_until_registration_changes():
 
 def test_list_providers_dedupes_aliases_in_cached_snapshot():
     _reset_registry()
-    profile = _profile("kimi", "moonshot", "kimi-k2")
+    profile = _profile("custom", "ollama", "local")
     providers.register_provider(profile)
 
-    assert providers.get_provider_profile("moonshot") is profile
+    assert providers.get_provider_profile("ollama") is profile
     assert providers.list_providers() == [profile]

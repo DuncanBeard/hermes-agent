@@ -318,21 +318,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 
 
-def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
-) -> None:
-    """Fail closed at init: the codex app-server compacts its own thread without a truthful
-    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
-    guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
-        raise RuntimeError(
-            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
-            "agent compacts its own thread without a truthful pre-compaction "
-            "transcript boundary, so a required pre-compress checkpoint "
-            "cannot be guaranteed. Disable compression.checkpoint_required "
-            "or use a non-app-server API mode."
-        )
 
 
 def _parse_config_int(raw: Any, default: int) -> int:
@@ -366,56 +351,22 @@ class CompressionSettings(SimpleNamespace):
 
 _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
 }
 
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
-    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
-    host, url = agent._base_url_hostname, agent._base_url_lower
-    if is_actual_route(agent.provider, base_url):
-        agent.api_mode = "chat_completions"
+    """Wire protocols are independent of custom endpoint identity."""
+    from hermes_cli.providers import nous_api_mode
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    if agent.provider == "copilot":
+        from hermes_cli.models import _should_use_copilot_responses_api
+        agent.api_mode = "codex_responses" if _should_use_copilot_responses_api(agent.model) else "chat_completions"
     elif api_mode in _EXPLICIT_API_MODES:
         agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
-        agent.api_mode = "codex_responses"
-    elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif provider_name is None and host == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and host == "api.anthropic.com"):
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-    elif url.rstrip("/").endswith("/anthropic"):
-        # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
-        agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
-        # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
+    elif agent.provider == "nous":
         agent.api_mode = nous_api_mode(agent.model)
     else:
-        # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
-        # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
-        # URL-driven, not provider-name-driven: `providers.meta` may point anywhere.
-        try:
-            # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai base_url)
-            # intentionally falls through to chat_completions here. The wire protocol for Meta is URL-driven
-            # BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
-            # OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
-            # break custom endpoints named "meta" that do not host the Responses API. See #63425.
-            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
-            _mandated = _host_mandated_api_mode(base_url or "")
-        except Exception:
-            _mandated = None
-        agent.api_mode = _mandated if _mandated is not None else "chat_completions"
+        agent.api_mode = _detect_api_mode_for_url(base_url or "") or "chat_completions"
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
@@ -478,7 +429,6 @@ def _finalize_routing(agent, api_mode, credential_pool):
         api_mode is None
         and agent.api_mode == "chat_completions"
         and not is_actual_route(agent.provider, agent.base_url)
-        and agent.provider != "copilot-acp"
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
         and (
@@ -698,9 +648,9 @@ def _setup_logging(agent):
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
     """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
     Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.azure_identity_adapter import is_token_provider
+    from agent.bearer_auth import is_token_provider
     if is_token_provider(key):
-        print("🔑 Using credentials: Microsoft Entra ID")
+        print("🔑 Using credentials: callable bearer provider")
     elif isinstance(key, str) and len(key) > 12:
         print(f"🔑 Using {label}: {key[:8]}...{key[-4:]}")
     elif warn_missing:
@@ -708,84 +658,15 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
-    """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
+    """Messages transport for Nous and explicitly configured custom endpoints."""
     from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
-    if agent.provider == "bedrock":
-        # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url, "anthropic_messages")
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
-        return
-    # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
-    # must use their own key or Anthropic credentials leak to third-party endpoints.
-    # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-    _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token() if _is_native_anthropic else None) or ""
-
-    # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
-    # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
-    # auth.json, so other processes' refreshes are seen).
-    if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-        try:
-            from hermes_cli.auth import build_minimax_oauth_token_provider
-            effective_key = build_minimax_oauth_token_provider()
-        except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
-            logging.getLogger(__name__).warning(
-                "MiniMax OAuth: failed to install per-request token provider "
-                "(%s); falling back to static bearer that will expire ~15min in.",
-                _mm_exc,
-            )
-
-    agent.api_key = effective_key
-    agent._anthropic_api_key = effective_key
-    # OAuth only for native Anthropic: third-party anthropic_messages providers must never
-    # trip OAuth paths — those inject Claude-Code identity headers → 401/403.
-    # Only mark the session as OAuth-authenticated when the token genuinely belongs to native Anthropic.
-    # Third-party providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must
-    # never trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
-    # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import _is_oauth_token as _is_oat
-    agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
-    if not agent.quiet_mode:
-        print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
-        _print_key_banner(effective_key, "token")
-
-
-def _init_moa_client(agent, api_key):
-    """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import build_moa_facade
-    agent.api_mode = "chat_completions"
-
-    # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
-    # shows each reference's answer before the aggregator acts. Display-only; shared with
-    # fallback-restore so a restored facade keeps emitting.
-    # build_moa_facade wires the reference relay that routes reference-model outputs to the agent's
-    # tool_progress_callback so every surface that already consumes it (CLI spinner/scrollback, TUI,
-    # desktop, gateway) can show each reference's answer as a labelled block before the aggregator acts. The
-    # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
-    # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
-    # they never touch the message history. See #53802.
-    agent.client = build_moa_facade(agent, agent.model)
-    agent._client_kwargs = {}
-    agent.api_key = api_key or "moa-virtual-provider"
-    agent.base_url = "moa://local"
-    if not agent.quiet_mode:
-        print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
-
-
-def _init_bedrock_client(agent, base_url):
-    """bedrock_converse: boto3 directly, no OpenAI client."""
-    from agent.bedrock_adapter import bind_bedrock_runtime
-    bind_bedrock_runtime(agent, base_url, "bedrock_converse")
-    if not agent.quiet_mode:
-        _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-        print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    agent.api_key = api_key or ""
+    agent._anthropic_api_key = agent.api_key
+    agent._is_anthropic_oauth = False
+    agent._anthropic_client = build_anthropic_client(agent.api_key, base_url, timeout=_provider_timeout)
 
 
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
@@ -797,9 +678,6 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
         client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
-    if agent.provider == "copilot-acp":
-        client_kwargs["command"] = agent.acp_command
-        client_kwargs["args"] = agent.acp_args
     # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
     # placeholder): send an empty Authorization header to override the SDK's "Bearer <key>".
     with suppress(Exception):
@@ -924,12 +802,7 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
-    try:
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
-    except Exception:
-        if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
-            raise
+
 
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
     _apply_openai_header_policy(agent, client_kwargs)
@@ -956,10 +829,6 @@ def _build_client(agent, api_key, base_url, fallback_model):
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
-    elif agent.provider == "moa":
-        _init_moa_client(agent, api_key)
-    elif agent.api_mode == "bedrock_converse":
-        _init_bedrock_client(agent, base_url)
     else:
         _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout)
 
@@ -979,15 +848,7 @@ def _lazy_headers(module: str, name: str, pass_key: bool = False, pass_base: boo
 # Host → default_headers factory for explicit base_url client construction. Ordered: first
 # host match wins; no match falls back to the provider profile's declared headers.
 _HOST_DEFAULT_HEADERS: List[tuple[str, Callable[[Any, str], Dict[str, str]]]] = [
-    ("openrouter.ai", _lazy_headers("agent.auxiliary_client", "build_or_headers")),
-    ("integrate.api.nvidia.com",
-     _lazy_headers("agent.auxiliary_client", "build_nvidia_nim_headers", pass_base=True)),
-    ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
     ("githubcopilot.com", _lazy_headers("hermes_cli.models", "copilot_default_headers")),
-    ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
-    ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
-    ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
-    ("x.ai", _lazy_headers("tools.xai_http", "hermes_xai_default_headers")),
 ]
 
 
@@ -1015,14 +876,14 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
 
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
+    """Normalize and validate the entire chain before attempting an inference route."""
+    from hermes_cli.auth import resolve_provider
     if isinstance(fallback_model, dict):
         fallback_model = [fallback_model]
     if not isinstance(fallback_model, list):
         return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
+    return [dict(entry, provider=resolve_provider(entry["provider"])) for entry in fallback_model
+            if isinstance(entry, dict) and entry.get("provider") and entry.get("model")]
 
 
 def _init_fallback_chain(agent, fallback_model):
@@ -1404,16 +1265,8 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
     return threshold, notice_enabled
 
 
-def _compression_codex_settings(cfg: Dict[str, Any]) -> tuple[str, bool, Optional[int]]:
-    """``codex_app_server_auto`` / ``codex_responses_native`` / ``codex_responses_compact_threshold``."""
-    app_server_auto = str(cfg.get("codex_app_server_auto", "native") or "native").lower()
-    if app_server_auto not in {"native", "hermes", "off"}:
-        _ra().logger.warning(
-            "Invalid compression.codex_app_server_auto=%r; using 'native'. "
-            "Valid values are: native, hermes, off.",
-            app_server_auto,
-        )
-        app_server_auto = "native"
+def _compression_codex_settings(cfg: Dict[str, Any]) -> tuple[bool, Optional[int]]:
+    """Native Responses compaction settings."""
     # Native Responses server-side compaction (opt-in; gate in agent/native_compaction.py).
     # Truthy coercion so "false"/"off" strings stay disabled.
     responses_native = is_truthy_value(cfg.get("codex_responses_native", False))
@@ -1427,7 +1280,7 @@ def _compression_codex_settings(cfg: Dict[str, Any]) -> tuple[str, bool, Optiona
                 "using the automatic threshold derived from local compression.",
                 _raw,
             )
-    return app_server_auto, responses_native, compact_threshold
+    return responses_native, compact_threshold
 
 
 def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
@@ -1451,10 +1304,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
-    _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
-    )
-    app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
+    responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
@@ -1501,7 +1351,6 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         micro_compact_defrag_tokens=max(
             1, _parse_config_int(cfg.get("micro_compact_defrag_threshold_tokens", 2000), 2000)
         ),
-        codex_app_server_auto=app_server_auto,
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
@@ -1797,21 +1646,7 @@ def _select_context_engine(_agent_cfg):
 
 
 def _compressor_max_tokens(agent):
-    """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
-    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
-    reserving 0 let the provider 400 before compaction fired."""
-    if agent.max_tokens is not None:
-        return agent.max_tokens
-    with suppress(Exception):
-        from agent.gemini_native_adapter import (
-            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
-        )
-        _gemini_provider = str(agent.provider or "").strip().lower() in {
-            "gemini", "google", "google-gemini", "google-ai-studio",
-        }
-        if _gemini_provider or is_native_gemini_base_url(agent.base_url):
-            return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-    return None
+    return agent.max_tokens
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
@@ -1880,7 +1715,6 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
-    agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native
     agent.codex_responses_compact_threshold = cs.codex_responses_compact_threshold
     from agent.native_compaction import resolve_native_compaction_capabilities
@@ -2229,6 +2063,23 @@ def init_agent(
       skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
+    from hermes_cli.provider_policy import require_supported_provider
+    from hermes_cli.auth import resolve_provider
+    if provider and provider.strip().lower() != "auto":
+        provider = resolve_provider(provider)
+    else:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested=provider, explicit_api_key=api_key,
+                                           explicit_base_url=base_url, target_model=model)
+        provider = require_supported_provider(runtime["provider"])
+        api_key = runtime.get("api_key")
+        base_url = runtime.get("base_url")
+        api_mode = api_mode or runtime.get("api_mode")
+        model = model or runtime.get("model") or ""
+    if api_mode and api_mode not in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        raise ValueError(f"Unsupported inference API mode: {api_mode}")
+    if acp_command or command or acp_args or args:
+        raise ValueError("Retired external-process inference transport; use a direct provider")
     _install_safe_stdio()
 
     _params = locals()

@@ -18,7 +18,15 @@
 
 **The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
+Use models through direct GitHub Copilot, [Nous Portal](https://portal.nousresearch.com), or your own custom endpoint. Switch with `hermes model`.
+
+## Fork scope
+
+This fork limits inference providers to **direct Copilot**, **Nous**, and **generic or named custom endpoints**. Claude, Gemini, and GPT models remain available when your chosen route offers them. Custom endpoints support Chat Completions, Responses, and Anthropic Messages; protocol names do not enable the retired vendor account integrations.
+
+Nous Portal login, free-tier/guest onboarding, dashboard authentication, and unrelated tool, media, and memory integrations remain supported. The Hermes ACP **server** remains available; the Copilot-ACP **provider** and MoA provider are removed. Explicit retired provider selections require a deliberate configuration change, not an automatic replacement; preserve existing credentials and history during migration.
+
+The upstream documentation and installers linked below describe the original Nous Research project and may include providers absent from this fork. Fork-specific guidance lives in [`website/docs`](website/docs). Original authorship, credits, and license are unchanged.
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
@@ -123,7 +131,7 @@ hermes doctor       # Diagnose any issues
 
 ## Skip the API-key collection — Nous Portal
 
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
+This fork retains Nous Portal alongside direct Copilot and custom endpoints. If you'd rather not collect separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
 
 - **300+ models** — pick any of them with `/model <name>`
 - **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.

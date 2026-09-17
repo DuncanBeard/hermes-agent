@@ -13,10 +13,8 @@ import { cn } from '@/lib/utils'
 import {
   cancelOnboardingFlow,
   copyDeviceCode,
-  copyExternalCommand,
   type OnboardingContext,
   type OnboardingFlow,
-  recheckExternalSignin,
   setOnboardingCode,
   setOnboardingModel,
   startManualOnboarding,
@@ -115,25 +113,6 @@ export function FlowPanel({
     )
   }
 
-  if (flow.status === 'external_pending') {
-    return (
-      <Step title={t.onboarding.signInWith(title)}>
-        <p className="text-sm text-muted-foreground">{t.onboarding.externalPending(title)}</p>
-        <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
-        <FlowFooter
-          left={
-            flow.provider.docs_url ? (
-              <DocsLink href={flow.provider.docs_url}>{t.onboarding.docs(title)}</DocsLink>
-            ) : null
-          }
-        >
-          <CancelBtn />
-          <Button onClick={() => void recheckExternalSignin(ctx)}>{t.onboarding.signedIn}</Button>
-        </FlowFooter>
-      </Step>
-    )
-  }
-
   if (flow.status !== 'polling') {
     return null
   }
@@ -195,22 +174,6 @@ export function DeviceCode({ code, copied, onCopy }: { code: string; copied: boo
         )
       )}
     </button>
-  )
-}
-
-function CodeBlock({ copied, onCopy, text }: { copied: boolean; onCopy: () => void; text: string }) {
-  const { t } = useI18n()
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-(--stroke-nous) px-3 py-2">
-      <code className="min-w-0 flex-1 truncate font-mono text-sm">
-        <span className="mr-2 select-none text-muted-foreground">$</span>
-        {text}
-      </code>
-      <Button onClick={onCopy} size="sm" variant="outline">
-        {copied ? t.common.copied : t.onboarding.copy}
-      </Button>
-    </div>
   )
 }
 

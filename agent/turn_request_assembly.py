@@ -37,70 +37,8 @@ class AssembledRequest:
     total_chars: Any
 
 
-def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
-    """Run the MoA reference models and append their aggregated context to the last user
-    message (as a trailing text part on multimodal turns). Fail-open."""
-    try:
-        from agent.message_content import flatten_message_text as _flatten_mt
-        from agent.moa_loop import _preset_temperature, aggregate_moa_context
-
-        _moa_context = aggregate_moa_context(
-            user_prompt=(
-                original_user_message
-                if isinstance(original_user_message, str)
-                # Multimodal content list: extract visible text rather than
-                # str()-ing parts, which would leak base64 image payloads.
-                else _flatten_mt(original_user_message)
-            ),
-            api_messages=api_messages,
-            reference_models=moa_config.get("reference_models") or [],
-            aggregator=moa_config.get("aggregator") or {},
-            temperature=_preset_temperature(moa_config, "reference_temperature"),
-            aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
-
-            # None = no per-preset override; inherit auxiliary.moa_reference.timeout.
-            reference_timeout=(
-                float(moa_config["reference_timeout"])
-                if moa_config.get("reference_timeout")
-                else None
-            ),
-            degraded_reference_policy=str(
-                moa_config.get("degraded_reference_policy") or "loud"
-            ),
-            agent=agent,
-        )
-        if not _moa_context:
-            return
-        for _msg in reversed(api_messages):
-            if _msg.get("role") == "user":
-                _base = _msg.get("content", "")
-                if isinstance(_base, str):
-                    _msg["content"] = _base + "\n\n" + _moa_context
-                elif isinstance(_base, list):
-                    _msg["content"] = [*_base, {"type": "text", "text": "\n\n" + _moa_context}]
-                break
-    except Exception as _moa_exc:
-        logger.warning("MoA context aggregation failed: %s", _moa_exc)
 
 
-def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_request: Any) -> tuple:
-    """Persistent-MoA request: rebase the pending prepared request onto the new messages
-    when the client supports it, else prepare a fresh one. Returns
-    ``(prepared_request, api_messages, pending_moa_prepared_request)``."""
-    _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-    prepared: Any = None
-    if pending_moa_prepared_request is not None:
-        _rebase = getattr(_moa_completions, "rebase_prepared_request", None)
-        if callable(_rebase):
-            prepared = _rebase(pending_moa_prepared_request, api_messages)
-        pending_moa_prepared_request = None
-    if prepared is None:
-        _prepare = getattr(_moa_completions, "prepare", None)
-        if callable(_prepare):
-            prepared = _prepare(api_messages)
-    if prepared is not None:
-        api_messages = prepared["messages"]
-    return prepared, api_messages, pending_moa_prepared_request
 
 
 def assemble_api_request(
@@ -123,8 +61,6 @@ def assemble_api_request(
         moa_config=moa_config, active_system_prompt=active_system_prompt,
     )
 
-    if moa_config:
-        _append_moa_context(agent, api_messages, moa_config, original_user_message)
 
     # Ephemeral prefill messages go right after the system prompt, API-call-time only.
     if agent.prefill_messages:
@@ -189,7 +125,7 @@ def assemble_api_request(
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
-    if agent._use_prompt_caching and agent.provider != "moa":
+    if agent._use_prompt_caching:
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 
         _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
@@ -219,10 +155,6 @@ def assemble_api_request(
     # ephemeral advisor output is absent from ``messages``; ``create()`` reuses the
     # prepared request instead of running the advisors again.
     _moa_prepared_request = None
-    if agent.provider == "moa":
-        _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
-            agent, api_messages, pending_moa_prepared_request
-        )
 
     # One image-stripped estimate feeds both figures; tools counted separately (50+
     # tools ≈ 20-30K tokens); total_chars is a rough proxy for logs/hooks only.

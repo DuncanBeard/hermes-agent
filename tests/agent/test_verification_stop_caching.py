@@ -76,7 +76,7 @@ def _make_agent(ra, session_id, tmp_path):
         session_id=session_id,
         api_key="test-key",
         base_url="http://127.0.0.1:8000/v1",
-        provider="openai-compat",
+        provider="custom",
         model="test-model",
         quiet_mode=True,
         skip_context_files=True,

@@ -21,7 +21,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
-from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
+from hermes_cli.doctor_connectivity import build_probes, run_probes
 from hermes_cli.doctor_tools import _safe_which
 
 from hermes_cli.doctor_config import (
@@ -102,8 +102,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     for r in results:
         for glyph, label, detail in r.lines:
             print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
-        if r.issues and not _has_healthy_oauth_fallback_for_apikey_provider(r.label):
-            f.issues.extend(r.issues)
+        f.issues.extend(r.issues)
 
 
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.

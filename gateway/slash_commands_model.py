@@ -1,5 +1,5 @@
 """Gateway slash commands that switch or tune the model route:
-/model, /codex-runtime, /reasoning, /fast, /personality.
+/model, /reasoning, /fast, /personality.
 
 Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewaySlashCommandsMixin``. Origin internals are imported lazily inside the bodies to avoid
@@ -73,7 +73,7 @@ class _ModelSwitchContext:
     reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
-    current_provider: str = "openrouter"
+    current_provider: str = "auto"
     current_base_url: str = ""
     current_api_key: str = ""
     user_provs: Any = None
@@ -113,7 +113,6 @@ class _ModelSwitchContext:
             self.current_api_key = override.get("api_key", self.current_api_key)
 
 
-
 def _model_provider_listing_lines(providers) -> list[str]:
     """Text-list body for ``/model`` with no args on platforms without a picker."""
     lines: list[str] = []
@@ -132,7 +131,7 @@ def _model_provider_listing_lines(providers) -> list[str]:
 
 
 class GatewayModelCommandsMixin:
-    """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
+    """Model-route slash commands (/model, /reasoning, /fast, /personality)."""
 
     # ----------------------------------------------------------------- /model
 
@@ -341,7 +340,7 @@ class GatewayModelCommandsMixin:
             # Offload blocking provider-listing off the event loop so the gateway doesn't freeze on a
             # stale-cache HTTP fetch. See #41289.
             providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
+                list_picker_providers, max_models=50, include_moa=False, **listing_kwargs
             )
         except Exception:
             providers = []
@@ -492,29 +491,7 @@ class GatewayModelCommandsMixin:
             return guard_reply
         return await self._commit_model_switch(result, ctx, source=source)
 
-    # -------------------------------------------------- /codex-runtime, /personality
-
-    async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
-        """Handle /codex-runtime; a real change evicts the cached agent so the new api_mode applies
-        on the next message (avoids prompt-cache invalidation mid-session)."""
-        from hermes_cli import codex_runtime_switch as crs
-
-        new_value, errors = crs.parse_args(event.get_command_args().strip() if event else "")
-        if errors:
-            return "❌ " + "\n❌ ".join(errors)
-        try:
-            from hermes_cli.config import load_config, save_config
-        except Exception as exc:
-            return f"❌ Could not load config: {exc}"
-        result = crs.apply(
-            load_config(), new_value, persist_callback=(save_config if new_value is not None else None),
-        )
-        if result.success and new_value is not None and result.requires_new_session:
-            try:
-                self._evict_cached_agent(self._session_key_for_source(event.source))
-            except Exception:
-                logger.debug("could not evict cached agent after codex-runtime change", exc_info=True)
-        return f"{'✓' if result.success else '✗'} {result.message}"
+    # -------------------------------------------------- /personality
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality — list or set a personality (hermes_cli.personality owns the state)."""

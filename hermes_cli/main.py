@@ -391,7 +391,6 @@ from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.vault import build_vault_parser
-from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.browser import build_browser_parser
@@ -717,25 +716,7 @@ from datetime import datetime
 from hermes_cli import __version__, __release_date__
 
 from hermes_cli.model_setup_flows import (
-    _model_flow_openrouter,
-    _model_flow_nous,
-    _model_flow_openai_codex,
-    _model_flow_xai_oauth,
-    _model_flow_qwen_oauth,
-    _model_flow_minimax_oauth,
-    _model_flow_custom,
-    _model_flow_azure_foundry,
-    _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
-    _model_flow_kimi,
-    _model_flow_stepfun,
-    _model_flow_bedrock,
-    _model_flow_vertex,
-    _model_flow_api_key_provider,
-    _model_flow_anthropic,
-    _model_flow_moa,
-    _model_flow_ai_gateway,
+    _model_flow_nous, _model_flow_copilot, _model_flow_custom, _model_flow_named_custom,
 )
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
@@ -766,18 +747,7 @@ from hermes_cli.main_dashboard import (
 from hermes_cli.main_dashboard import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _respawn_dashboard_processes,
 )
-from hermes_cli.main_provider_setup import (
-    _GENERIC_API_KEY_PROVIDERS,
-    _aux_config_menu,
-    _build_provider_picker_rows,
-    _clear_stale_openai_base_url,
-    _is_profile_api_key_provider,
-    _named_custom_provider_map,
-    _offer_reasoning_after_pick,
-    _prompt_main_reasoning_effort,
-    _prompt_provider_choice,
-    _remove_custom_provider,
-)
+from hermes_cli.main_provider_setup import (_aux_config_menu, _build_provider_picker_rows, _named_custom_provider_map, _offer_reasoning_after_pick, _prompt_main_reasoning_effort, _prompt_provider_choice, _remove_custom_provider)
 from hermes_cli.main_install_repair import (
     _cleanup_quarantined_exes,
     _recover_from_interrupted_install,
@@ -1748,6 +1718,13 @@ def cmd_chat(args):
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
+    from hermes_cli.provider_policy import UnsupportedProviderError
+    from hermes_cli.runtime_provider import validate_provider_pins
+    try:
+        validate_provider_pins(getattr(args, "provider", None))
+    except UnsupportedProviderError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     from hermes_cli.stream_json import stream_json_requested
     # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too.
     use_tui = False if stream_json_requested(args) else _resolve_use_tui(args)
@@ -1919,23 +1896,9 @@ def cmd_model(args):
 # ``custom:*``, remove-custom and the generic API-key set are the fallthrough
 # branches in select_provider_and_model.
 _PROVIDER_MODEL_FLOWS = {
-    "openrouter": lambda c, m, a: _model_flow_openrouter(c, m),
-    "moa": lambda c, m, a: _model_flow_moa(c, m),
-    "ai-gateway": lambda c, m, a: _model_flow_ai_gateway(c, m),
     "nous": lambda c, m, a: _model_flow_nous(c, m, args=a),
-    "openai-codex": lambda c, m, a: _model_flow_openai_codex(c, m),
-    "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
-    "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
-    "minimax-oauth": lambda c, m, a: _model_flow_minimax_oauth(c, m, args=a),
-    "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
-    "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
-    "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
-    "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
-    "bedrock": lambda c, m, a: _model_flow_bedrock(c, m),
-    "vertex": lambda c, m, a: _model_flow_vertex(c, m),
-    "azure-foundry": lambda c, m, a: _model_flow_azure_foundry(c, m),
 }
 
 
@@ -2098,25 +2061,15 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
-    elif (
-        selected_provider in _GENERIC_API_KEY_PROVIDERS
-        or _is_profile_api_key_provider(selected_provider)
-    ):
-        _model_flow_api_key_provider(config, selected_provider, current_model)
+    else:
+        from hermes_cli.provider_policy import require_supported_provider
+        require_supported_provider(selected_provider)
 
     # Every flow persists through _save_model_choice; a changed model.default means a pick
     # landed, so offer its reasoning effort here once instead of inside each flow.
     _offer_reasoning_after_pick(current_model)
 
-    # Post-switch cleanup: switching to a named provider (anything except
-    # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons
-    # auxiliary clients using provider:auto — clear it proactively. (#5161)
-    if selected_provider not in {
-        "custom",
-        "cancel",
-        "remove-custom",
-    } and not selected_provider.startswith("custom:"):
-        _clear_stale_openai_base_url()
+
 
 
 # Frozen updater surface (PEP 562 ``__getattr__`` below): the frozen
@@ -3279,7 +3232,6 @@ def _build_cli_parser():
     chat_parser.set_defaults(func=cmd_chat)
 
     build_model_parser(subparsers, cmd_model=cmd_model)
-    build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)
     build_browser_parser(subparsers)

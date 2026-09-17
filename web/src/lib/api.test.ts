@@ -163,7 +163,6 @@ describe("api OAuth helpers", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await api.disconnectOAuthProvider("anthropic");
-    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
     await api.cancelOAuthSession("oauth-session");
     await api.revealEnvVar("OPENAI_API_KEY");
 
@@ -186,7 +185,6 @@ describe("api OAuth helpers", () => {
     await api.getOAuthProviders();
     await api.disconnectOAuthProvider("anthropic");
     await api.startOAuthLogin("openai-codex");
-    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
     await api.pollOAuthSession("anthropic", "oauth-session");
     await api.cancelOAuthSession("oauth-session");
 
@@ -194,7 +192,6 @@ describe("api OAuth helpers", () => {
       "/api/providers/oauth?profile=worker",
       "/api/providers/oauth/anthropic?profile=worker",
       "/api/providers/oauth/openai-codex/start?profile=worker",
-      "/api/providers/oauth/anthropic/submit?profile=worker",
       "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
       "/api/providers/oauth/sessions/oauth-session?profile=worker",
     ]);

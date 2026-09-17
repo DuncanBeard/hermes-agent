@@ -1003,7 +1003,6 @@ def build_turn_context(
     # Sidecar skipped for codex_app_server/MoA.
     if (
         not moa_active
-        and getattr(agent, "api_mode", None) != "codex_app_server"
         and 0 <= current_turn_user_idx < len(messages)
         and messages[current_turn_user_idx].get("role") == "user"
     ):
@@ -1033,17 +1032,6 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
     the virtual preset name; use the resolved aggregator so Gemini keeps
     thought_signature (extra_content)."""
     _sanitize_model = agent.model
-    if agent.provider == "moa":
-        if moa_config:
-            _agg = moa_config.get("aggregator") or {}
-            if _agg.get("model"):
-                _sanitize_model = _agg["model"]
-        if _sanitize_model == agent.model:
-            # Virtual-provider mode: no moa_config is threaded through; ask the facade
-            # for the aggregator slot from the previous create().
-            _agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
-            if _agg_slot and _agg_slot.get("model"):
-                _sanitize_model = _agg_slot["model"]
     return _sanitize_model
 
 

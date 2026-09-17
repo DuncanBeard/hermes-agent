@@ -144,7 +144,7 @@ def agent_env():
 
     agent = AIAgent(
         api_key="test-key", base_url=f"http://127.0.0.1:{port}/v1",
-        provider="openai-compat", model="test-model",
+        provider="custom", model="test-model",
         max_iterations=10, enabled_toolsets=[],
         quiet_mode=True, skip_context_files=True, skip_memory=True,
         save_trajectories=False, platform="cli",

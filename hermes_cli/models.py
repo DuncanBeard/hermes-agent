@@ -155,43 +155,6 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 # stale together.
 
 
-def _openrouter_catalog_disk_ttl() -> float:
-    """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
-    from hermes_cli.model_catalog import refresh_interval_seconds
-
-    return refresh_interval_seconds()
-
-
-def _openrouter_catalog_disk_path() -> Path:
-    from hermes_constants import get_hermes_home
-
-    return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
-
-
-def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
-    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
-    obj = _read_json_cache(_openrouter_catalog_disk_path())
-    if obj is None:
-        return None
-    try:
-        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
-            return None
-    except (TypeError, ValueError):
-        return None
-    items = obj.get("curated")
-    if not isinstance(items, list):
-        return None
-    out = [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
-    return out or None
-
-
-def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
-    try:
-        _write_json_cache(
-            _openrouter_catalog_disk_path(),
-            {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
-    except Exception as exc:
-        logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -486,19 +449,6 @@ def get_default_model_for_provider(provider: str) -> str:
     return models[0] if models else ""
 
 
-def _openrouter_model_is_free(pricing: Any) -> bool:
-    return _zero_priced(pricing, ("prompt", "completion"), "0")
-
-
-def _openrouter_model_supports_tools(item: Any) -> bool:
-    """True when ``supported_parameters`` advertises ``tools`` (hermes-agent is tool-calling-first).
-    Permissive when the field is absent/malformed: some OpenRouter-compatible gateways (Nous Portal,
-    private mirrors) don't populate it, and the picker must not silently empty for them.
-
-    Ported from Kilo-Org/kilocode#9068.
-    """
-    params = item.get("supported_parameters") if isinstance(item, dict) else None
-    return "tools" in params if isinstance(params, list) else True
 
 
 # Reasoning-capability cache slots, one set per catalog (OpenRouter, Nous Portal). The logic
@@ -542,74 +492,8 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
     return live_items, live_by_id
 
 
-def fetch_openrouter_models(
-    timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
-    # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
-    from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
-    _me = sys.modules[__name__]
-    cached = profile_slot_get(_me, "_openrouter_catalog_cache")
-
-    if cached is not None and not force_refresh:
-        return list(cached)
-
-    # Cold process: serve from the persisted disk cache when fresh so the
-    # picker doesn't re-download the full ~686KB catalog on every open.
-    if not force_refresh:
-        disk = _read_openrouter_catalog_disk()
-        if disk:
-            profile_slot_set(_me, "_openrouter_catalog_cache", disk)
-            return list(disk)
-
-    # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
-    # (tool support, free pricing) is applied on top either way.
-    try:
-        from hermes_cli.model_catalog import get_curated_openrouter_models
-        remote = get_curated_openrouter_models()
-    except Exception:
-        remote = None
-    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-
-    live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
-    if live is None:
-        return list(cached or fallback)
-    live_items, live_by_id = live
-
-    # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
-    global _openrouter_reasoning_caps_cache
-    seeded = _seed_reasoning_caps(_OPENROUTER_CATALOG_URL, live_items)
-    if _openrouter_reasoning_caps_cache is None and seeded is not None:
-        _openrouter_reasoning_caps_cache = seeded
-
-    curated: list[tuple[str, str]] = []
-    silent_default = get_preferred_silent_default_model("openrouter")
-    for preferred_id, _ in fallback:
-        live_item = live_by_id.get(preferred_id)
-        # Hide models without tool-calling support — selecting one fails at the first tool call.
-        if live_item is None or not _openrouter_model_supports_tools(live_item):
-            continue
-        # Hide models that don't advertise tool-calling support — hermes-agent requires it and surfacing
-        # them leads to immediate runtime failures when the user selects them. Ported from
-        # Kilo-Org/kilocode#9068.
-        if preferred_id == silent_default:
-            desc = "default"  # keep the silent-default badge through the live refresh
-        else:
-            desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
-
-    if not curated:
-        return list(cached or fallback)
-    if not curated[0][1]:
-        curated[0] = (curated[0][0], "recommended")
-    profile_slot_set(_me, "_openrouter_catalog_cache", curated)
-    _write_openrouter_catalog_disk(curated)
-    return list(curated)
 
 
-def model_ids(*, force_refresh: bool = False) -> list[str]:
-    """Return just the OpenRouter model-id strings."""
-    return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
 def get_curated_nous_model_ids() -> list[str]:
@@ -623,48 +507,6 @@ def get_curated_nous_model_ids() -> list[str]:
     return list(remote or _PROVIDER_MODELS.get("nous", []))
 
 
-def _ai_gateway_model_is_free(pricing: Any) -> bool:
-    return _zero_priced(pricing, ("input", "output"), "0")
-
-
-def fetch_ai_gateway_models(
-    timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
-    global _ai_gateway_catalog_cache
-
-    if _ai_gateway_catalog_cache is not None and not force_refresh:
-        return list(_ai_gateway_catalog_cache)
-
-    from hermes_constants import AI_GATEWAY_BASE_URL
-
-    fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
-    if live is None:
-        return list(_ai_gateway_catalog_cache or fallback)
-    _, live_by_id = live
-
-    curated = [
-        (pid, "free" if _ai_gateway_model_is_free(live_by_id[pid].get("pricing")) else "")
-        for pid, _ in fallback if pid in live_by_id]
-    if not curated:
-        return list(_ai_gateway_catalog_cache or fallback)
-
-    # A free Moonshot model in the live catalog is auto-promoted to #1 as "recommended".
-    free_moonshot = next(
-        (mid for mid, item in live_by_id.items()
-         if mid.startswith("moonshotai/") and _ai_gateway_model_is_free(item.get("pricing"))),
-        None)
-    if free_moonshot:
-        curated = [(free_moonshot, "recommended")] + [(mid, desc) for mid, desc in curated if mid != free_moonshot]
-    else:
-        curated[0] = (curated[0][0], "recommended")
-    _ai_gateway_catalog_cache = curated
-    return list(curated)
-
-
-def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
-    """Return just the AI Gateway model-id strings."""
-    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
 
 
 # ---------------------------------------------------------------------------
@@ -836,8 +678,6 @@ def curated_models_for_provider(
     is unreachable.
     """
     normalized = normalize_provider(provider)
-    if normalized == "openrouter":
-        return fetch_openrouter_models(force_refresh=force_refresh)
 
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
@@ -1024,25 +864,12 @@ def detect_provider_for_model(
 
 
 def _detection_candidates(name: str, current_provider: str):
-    """Yield ``(provider, model)`` guesses in ladder order; ``None`` means the current provider's own
-    catalog owns the name (stop, stay)."""
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         yield static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         yield None
         return
-
-    # OpenRouter catalog (exact slug, then bare model part).
-    or_slug = _find_openrouter_slug(name)
-    if or_slug:
-        if current_provider == "openrouter" and or_slug == name:
-            yield None  # already on openrouter with matching name
-            return
-        yield ("openrouter", or_slug)
-
-    # Explicit ``vendor/model`` prefix naming a configured provider — AFTER the OpenRouter lookup so
-    # aggregator-native slugs (``deepseek/deepseek-chat``) keep their routing.
     prefixed = _resolve_provider_prefix(name)
     if prefixed:
         yield prefixed
@@ -1061,10 +888,9 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
 
 
 def normalize_provider(provider: Optional[str]) -> str:
-    """Normalize provider aliases to canonical ids. ``"auto"`` passes through — use
-    ``hermes_cli.auth.resolve_provider()`` to resolve it from credentials."""
-    normalized = (provider or "openrouter").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    """Normalize aliases; selectors remain selectors, never become a vendor account."""
+    from hermes_cli.providers import normalize_provider as normalize
+    return normalize(provider or "auto")
 
 
 def provider_label(provider: Optional[str]) -> str:
@@ -1225,38 +1051,6 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return _merge_unique(_merge_unique([], mdev), curated)
 
 
-def _openai_discovery_base_url(provider: str) -> str:
-    """OpenAI endpoint for model discovery, mirroring runtime precedence so discovery probes the SAME
-    endpoint inference uses: ``$OPENAI_BASE_URL`` → config ``model.base_url`` (when the configured
-    provider matches) → the canonical default."""
-    env_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-    if env_raw:
-        return env_raw
-    try:
-        model_cfg = _get_model_config_dict()
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        same_provider = normalize_provider(provider) == normalize_provider(cfg_provider)
-        if cfg_provider in ("openai", "openai-api") and same_provider:
-            cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_url:
-                return cfg_url
-    except Exception:
-        pass
-    return "https://api.openai.com/v1"
-
-
-def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from hermes_cli.codex_models import get_codex_model_ids
-
-    # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
-    # catalog without a token / when unreachable.
-    try:
-        from hermes_cli.auth import resolve_codex_runtime_credentials
-
-        access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
-    except Exception:
-        access_token = None
-    return get_codex_model_ids(access_token=access_token)
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
@@ -1264,39 +1058,13 @@ _COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fres
 _copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
 
 
-def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
-    """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
-    successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
-    this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
-    probe timeout), so without the memo every switch paid a subprocess. A failed probe is
-    memoized much more briefly so a user who signs in to the CLI right after a miss is picked up
-    on the next switch (or immediately via ``/model --refresh``, which clears this memo)."""
-    global _copilot_acp_session_memo
-    now = time.monotonic()
-    memo = _copilot_acp_session_memo
-    if not force_refresh and memo is not None and now - memo[0] < memo[1]:
-        return memo[2]
-    from providers import get_provider_profile
-
-    try:
-        live = get_provider_profile("copilot-acp").fetch_models() or None
-    except Exception:
-        logger.debug("copilot-acp session model discovery failed", exc_info=True)
-        live = None
-    _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
-    return live
 
 
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
-        return live
     try:
-        live = _fetch_github_models(_resolve_copilot_catalog_api_key())
-        if live:
-            return live
+        return _fetch_github_models(_resolve_copilot_catalog_api_key()) or None
     except Exception:
-        pass
-    return list(_PROVIDER_MODELS.get("copilot", [])) if normalized == "copilot-acp" else None
+        return None
 
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1337,54 +1105,6 @@ def _api_key_provider_live(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
-def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    model_cfg = _get_model_config_dict()
-    cfg_base_url = cfg_api_key = ""
-    if normalize_provider(str(model_cfg.get("provider", "") or "")) == "anthropic":
-        cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
-        cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
-    live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
-    curated = list(_PROVIDER_MODELS.get("anthropic", []))
-    if not live:
-        return curated
-    # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
-    # curated first, then live-only extras, so a fresh curated model never disappears.
-    return live if cfg_base_url else _merge_unique(curated, live)
-
-
-def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        return None
-    base = _openai_discovery_base_url(normalized)
-    # Custom OpenAI-compatible endpoints serve a small curated catalog — use it verbatim. Official
-    # OpenAI hosts (canonical and data-residency regional) return 120+ embeddings/whisper/tts/…
-    # entries, so intersect with the curated agentic catalog so ``/model`` matches ``hermes model``.
-    # Model not in live /v1/models — check the curated catalog before rejecting. Providers may omit models
-    # from their live listing that are still valid (stale cache, partial rollout, gated previews). Use the
-    # pure-catalog helper (no extra live fetch) so we only accept models Hermes actually ships. (#46850)
-    # Their /v1/models listing is access-scoped and authoritative — a model absent from it is one this key
-    # CANNOT serve, so the curated soft-accept would manufacture a selection that 400s at first use. Custom
-    # OpenAI-compatible proxies keep the fallback (incomplete listings are common there).
-    from hermes_cli.providers import is_official_openai_host
-
-    try:
-        live = fetch_api_models(api_key, base)
-    except Exception:
-        live = None
-    if not live:
-        return None
-    if not is_official_openai_host(base):
-        return live
-    live_lower = {m.lower() for m in live}
-    curated = list(_PROVIDER_MODELS.get(normalized, []))
-    # Curated order, only models the account has access to; an account serving none of them (rare)
-    # falls back to curated so the picker still offers sane defaults.
-    discovered = [m for m in curated if m.lower() in live_lower]
-    # Astra is intentionally absent from offline/static catalogs: the official API's
-    # account-scoped /models response is the only source that may advertise it.
-    discovered.extend(m for m in live if is_astra_model(m))
-    return discovered or curated or live
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1395,50 +1115,18 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     # Try common API key env vars for custom endpoints.
     api_key = (
         str(model_cfg.get("api_key", "") or "").strip()
-        or os.getenv("CUSTOM_API_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-        or os.getenv("OPENROUTER_API_KEY", ""))
+        or os.getenv("CUSTOM_API_KEY", ""))
     api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
 
-def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    # Live discovery keyed by the resolved AWS region so EU/AP users see eu.*/ap.* ids.
-    try:
-        from agent.bedrock_adapter import bedrock_model_ids_or_none
-
-        return bedrock_model_ids_or_none()
-    except Exception:
-        return None
-
-
-def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
-    # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
-    return _fetch_opencode_free_models(force_refresh=force_refresh) or list(_PROVIDER_MODELS.get(normalized, []))
 
 
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
-    "openrouter": lambda normalized, force_refresh: model_ids(force_refresh=force_refresh),
-    "openai-codex": _codex_catalog,
-    "copilot": _copilot_catalog,
-    "copilot-acp": _copilot_catalog,
-    "nous": _nous_catalog,
-    "stepfun": _api_key_provider_live,
-    "gmi": _api_key_provider_live,
-    "anthropic": _anthropic_catalog,
-    "ai-gateway": lambda normalized, force_refresh: _fetch_ai_gateway_models() or None,
-    # DeepInfra's generic /models mixes chat, image, video, speech and embedding models; the tagged
-    # catalog helper is the only safe source for the chat picker, including its empty/failure result.
-    "deepinfra": lambda normalized, force_refresh: _fetch_deepinfra_models(force_refresh=force_refresh) or [],
-    "ollama-cloud": lambda normalized, force_refresh: fetch_ollama_cloud_models(force_refresh=force_refresh) or None,
-    "openai": _openai_catalog,
-    "openai-api": _openai_catalog,
-    "custom": _custom_catalog,
-    "bedrock": _bedrock_catalog,
-    "opencode-free": _opencode_free_catalog}
+    "copilot": _copilot_catalog, "nous": _nous_catalog, "custom": _custom_catalog,
+}
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
@@ -1471,38 +1159,15 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
-    """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
-    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
-    requested = str(provider or "").strip().lower()
-    if requested == "ollama":
-        return _ollama_local_catalog(force_refresh)
-
-    normalized = normalize_provider(provider)
-    fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
-    if fetcher is not None:
-        models = fetcher(normalized, force_refresh)
-        if models is not None:
-            return models
-    try:
-        models = _profile_live_catalog(normalized)
-    except Exception:
-        models = None
-    if models is not None:
-        return models
-
-    # Merge static curated list with live API results so models that the live endpoint omits (stale cache,
-    # partial rollout) still appear in the picker. Single providers (kimi, zai) use curated-first (commit
-    # 658ac1d86) to surface newest models even when live API lags (#46309). OpenCode Zen / Go are different:
-    # their live API is the authoritative catalog, so they merge live-first — live entries lead and stale
-    # curated entries no longer pollute the top of the picker. (#49129) Plugin providers with no static
-    # _PROVIDER_MODELS entry fall back to the profile's curated fallback_models so their agentic picks lead
-    # the picker instead of whatever the live catalog happens to return first (e.g. Fireworks lists an image
-    # model, flux-*, ahead of its chat models).
-    curated_static = list(_PROVIDER_MODELS.get(normalized, []))
-    if normalized not in _MODELS_DEV_PREFERRED:
-        return curated_static
-    merged = _merge_with_models_dev(normalized, curated_static)
-    return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
+    """Models for a supported account or a configured named endpoint."""
+    from hermes_cli.auth import resolve_provider
+    normalized = resolve_provider(provider)
+    if normalized.startswith("custom:"):
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested=normalized)
+        return fetch_api_models(runtime["api_key"], runtime["base_url"]) or []
+    models = _PROVIDER_CATALOG_FETCHERS[normalized](normalized, force_refresh)
+    return models if models is not None else list(_PROVIDER_MODELS.get(normalized, []))
 
 
 # ---------------------------------------------------------------------------
@@ -1604,33 +1269,6 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # config.yaml's model.base_url changes the endpoint discovery probes (data-residency hosts)
-    # without touching any env var, so it must change the fingerprint too.
-    if provider in ("openai", "openai-api"):
-        try:
-            parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
-        except Exception:
-            pass
-
-    if provider == "ollama":
-        provider_cfg = _get_provider_config_dict("ollama")
-        key_env = provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or ""
-        model_cfg = _get_model_config_dict()
-        parts += [
-            f"OLLAMA_HOST={os.environ.get('OLLAMA_HOST', '')}",
-            "providers.ollama.base_url="
-            f"{provider_cfg.get('base_url', '') or provider_cfg.get('api', '') or provider_cfg.get('url', '')}",
-            f"providers.ollama.api_key={provider_cfg.get('api_key', '')}",
-            f"providers.ollama.key_env={key_env}",
-        ]
-        if key_env:
-            parts.append(f"{key_env}={os.environ.get(str(key_env), '')}")
-        parts += [
-            f"model.provider={model_cfg.get('provider', '')}|model.base_url={model_cfg.get('base_url', '')}",
-            "providers.ollama.extra_headers="
-            + json.dumps(provider_cfg.get("extra_headers", {}), sort_keys=True, default=str),
-        ]
-
     def _mtime_part(label: str, path) -> None:
         try:
             parts.append(f"{label}@{os.stat(path).st_mtime_ns}")
@@ -1645,8 +1283,7 @@ def _credential_fingerprint(provider: str) -> str:
             _mtime_part(rel, get_hermes_home() / rel)
     except Exception:
         pass
-    for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+    for rel in ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"):
         path = os.path.expanduser(rel)
         _mtime_part(path, path)
 
@@ -1788,86 +1425,6 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
-def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
-    """Read-only API-key pool credential for model discovery (``resolve_anthropic_token()`` ignores
-    ``api_key`` pool entries — its runtime contract is OAuth-oriented)."""
-    try:
-        from agent.credential_pool import AUTH_TYPE_API_KEY
-        from hermes_cli.auth import read_credential_pool
-
-        for entry in read_credential_pool("anthropic"):
-            if not isinstance(entry, dict) or entry.get("auth_type") != AUTH_TYPE_API_KEY:
-                continue
-            token = str(entry.get("access_token") or "").strip()
-            if token:
-                return token, str(entry.get("base_url") or entry.get("inference_base_url") or "").strip()
-    except Exception:
-        pass
-    return "", ""
-
-
-def _fetch_anthropic_models(
-    timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
-) -> Optional[list[str]]:
-    """Sorted model ids from the Anthropic /v1/models endpoint, or None. Credentials: explicit
-    ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
-    API-key credential_pool entry."""
-    try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
-    except ImportError:
-        return None
-
-    resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
-    if not token:
-        # A pool credential and its endpoint are one security boundary — never pair the pool key
-        # with a caller-provided endpoint.
-        token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()
-    if not token:
-        return None
-
-    headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
-    is_oauth = _is_oauth_token(token)
-    if is_oauth:
-        headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
-        headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
-    else:
-        headers["x-api-key"] = token
-
-    url = _anthropic_models_url(resolved_base_url)
-    try:
-        try:
-            data = _get_json(url, timeout=timeout, headers=headers)
-        except urllib.error.HTTPError as http_err:
-            # OAuth subscriptions that 400 the 1M context beta ("long context beta is not yet
-            # available for this subscription"): retry once without it; re-raise anything else.
-            if not (is_oauth and http_err.code == 400):
-                raise
-            try:
-                body_text = http_err.read().decode(errors="ignore").lower()
-            except Exception:
-                body_text = ""
-            if not ("long context beta" in body_text and "not yet available" in body_text):
-                raise
-            headers["anthropic-beta"] = ",".join(
-                [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
-            )
-            data = _get_json(url, timeout=timeout, headers=headers)
-        models = [m["id"] for m in data.get("data", []) if m.get("id")]
-        seen_cursors: set[str] = set()
-        for _page in range(_ANTHROPIC_MODELS_MAX_PAGES):
-            cursor = _anthropic_next_cursor(data, seen_cursors)
-            if cursor is None:
-                break
-            data = _get_json(_anthropic_models_url(resolved_base_url, after_id=cursor), timeout=timeout, headers=headers)
-            models.extend(m["id"] for m in data.get("data", []) if m.get("id"))
-        models = list(dict.fromkeys(models))
-        # opus, then sonnet, then haiku; alphabetical within tier.
-        return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
-    except Exception as e:
-        logger.debug("Failed to fetch Anthropic models: %s", e)
-        return None
 
 
 def _payload_items(payload: Any) -> list[dict[str, Any]]:
@@ -2454,118 +2011,6 @@ _deepinfra_catalog_neg_cache: dict[str, float] = {}
 _DEEPINFRA_CATALOG_NEG_TTL = 60.0  # seconds
 
 
-def _deepinfra_env(key: str) -> str:
-    """Profile-scoped ``.env``/environ read: under a multiplexed turn the launch env is not this profile's."""
-    from hermes_cli.config import get_env_value_prefer_dotenv
-    return (get_env_value_prefer_dotenv(key) or "").strip()
-
-
-def _deepinfra_catalog_url() -> tuple[str, str]:
-    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint. The key carries the
-    api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
-    different keys must not share an entry."""
-    base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
-    from agent.credential_persistence import fingerprint_secret_value
-    fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
-    return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
-
-
-def _fetch_deepinfra_catalog(
-    *, timeout: float = 5.0, force_refresh: bool = False) -> Optional[list[dict]]:
-    """Raw DeepInfra catalog list (chat, embed, image-gen, TTS, STT in one response), cached per base
-    URL. A Bearer token is attached when available so user-scoped catalogs (private fine-tunes) show."""
-    cache_key, url = _deepinfra_catalog_url()
-    if not force_refresh:
-        if cache_key in _deepinfra_catalog_cache:
-            return _deepinfra_catalog_cache[cache_key]
-        last_fail = _deepinfra_catalog_neg_cache.get(cache_key)
-        if last_fail is not None and (time.monotonic() - last_fail) < _DEEPINFRA_CATALOG_NEG_TTL:
-            return None
-
-    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
-    api_key = _deepinfra_env("DEEPINFRA_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        payload = _get_json(url, timeout=timeout, headers=headers)
-    except Exception:
-        _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()
-        return None
-    data = payload.get("data")
-    if not isinstance(data, list):
-        _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()
-        return None
-    _deepinfra_catalog_cache[cache_key] = data
-    _deepinfra_catalog_neg_cache.pop(cache_key, None)
-    return data
-
-
-def _fetch_deepinfra_models_by_tag(
-    tag: str, *, timeout: float = 5.0, force_refresh: bool = False) -> Optional[list[dict]]:
-    """DeepInfra ``{"id", "metadata"}`` items whose ``metadata.tags`` includes *tag*. Items with no
-    surface tag fall through to the legacy id-regex exclusion (chat surface only — embed/image-gen/
-    tts/stt cannot be inferred from an id). ``None`` on network failure."""
-    data = _fetch_deepinfra_catalog(timeout=timeout, force_refresh=force_refresh)
-    if data is None:
-        return None
-    matched: list[dict] = []
-    for item in data:
-        mid = item.get("id")
-        raw_metadata = item.get("metadata")
-        if not mid or raw_metadata is None:  # metadata None = listed-but-not-served stub
-            continue
-        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-        raw_tags = metadata.get("tags")
-        tags = raw_tags if isinstance(raw_tags, list) else []
-        if any(t in _DEEPINFRA_SURFACE_TAGS for t in tags):
-            hit = tag in tags
-        else:
-            hit = tag == "chat" and not _DEEPINFRA_EXCLUDE_RE.search(mid)
-        if hit:
-            matched.append({"id": mid, "metadata": metadata})
-    return matched
-
-
-def _fetch_deepinfra_models(
-    timeout: float = 5.0, *, force_refresh: bool = False) -> Optional[list[str]]:
-    """DeepInfra chat-model ids (string-list contract for :func:`provider_model_ids`); ``None`` on
-    network failure or when no chat-tagged id exists."""
-    items = _fetch_deepinfra_models_by_tag("chat", timeout=timeout, force_refresh=force_refresh)
-    return ([item["id"] for item in items] or None) if items is not None else None
-
-
-def deepinfra_model_ids(tag: str, *, force_refresh: bool = False) -> list[str]:
-    """Return DeepInfra model ids carrying surface *tag* (``[]`` on failure)."""
-    items = _fetch_deepinfra_models_by_tag(tag, force_refresh=force_refresh)
-    return [item["id"] for item in items] if items else []
-
-
-def deepinfra_base_url(section: Optional[dict] = None) -> str:
-    """DeepInfra base URL: config-section ``base_url`` → ``DEEPINFRA_BASE_URL`` env → default; stripped."""
-    candidate = section.get("base_url") if isinstance(section, dict) else None
-    value = candidate or _deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
-    return str(value).strip().rstrip("/")
-
-
-def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
-    """Fetch available language models with tool-use from AI Gateway."""
-    api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
-    if not api_key:
-        return None
-    base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
-    if not base_url:
-        from hermes_constants import AI_GATEWAY_BASE_URL
-        base_url = AI_GATEWAY_BASE_URL
-
-    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
-    try:
-        url = base_url.rstrip("/") + "/models"
-        data = _get_json(url, timeout=timeout, headers=headers)
-        return [
-            m["id"] for m in data.get("data", [])
-            if m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]
-    except Exception:
-        return None
 
 
 def fetch_api_models(
