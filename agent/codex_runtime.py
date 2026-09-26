@@ -770,6 +770,11 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
         self.announced_output_order: Dict[str, tuple] = {}
+        self.announced_item_ids: Dict[int, str] = {}
+
+    def _announced_item_id(self, event: Any, item_id: str) -> str:
+        # Copilot can change opaque item IDs between events; output_index stays stable.
+        return self.announced_item_ids.get(_event_field(event, "output_index"), item_id)
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -783,6 +788,9 @@ class _CodexResponseAssembler:
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
+        output_index = _event_field(event, "output_index")
+        if item_id and output_index is not None:
+            self.announced_item_ids[output_index] = item_id
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
@@ -828,7 +836,8 @@ class _CodexResponseAssembler:
 
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        item_id = self._announced_item_id(event, str(_event_field(event, "item_id", "")))
+        pending = self.pending_function_calls.get(item_id)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -857,7 +866,7 @@ class _CodexResponseAssembler:
         self.output_items.append(done_item)
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
-        done_id = str(_event_field(done_item, "id", ""))
+        done_id = self._announced_item_id(event, str(_event_field(done_item, "id", "")))
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
